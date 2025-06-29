@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GPT Nutrition Knowledge Evaluator
 
 A comprehensive evaluation framework for testing GPT models on nutrition-related tasks using Calorie King food data format.
@@ -219,3 +220,61 @@ To extend the evaluation framework:
 ## License
 
 This evaluation framework is designed for research and educational purposes.
+=======
+# CalorieKing Data Scraper
+
+This script fetches nutritional information from the CalorieKing API and saves it to a CSV file.
+
+## Setup
+
+1. Clone this repository
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Create your configuration file:
+   ```bash
+   cp config.template.py config.py
+   ```
+4. Edit `config.py` and replace `your_access_token_here` with your actual CalorieKing API access token
+
+## Usage
+
+Run the script:
+```bash
+python calorie_king_scraper.py
+```
+
+The script will:
+- Fetch all foods from the CalorieKing database
+- Get detailed nutritional information for each food
+- Save the data to `calorie_king_data.csv`
+- Create periodic backups in `calorie_king_data_partial.csv`
+- Save data to `calorie_king_data_error.csv` if an error occurs
+
+## Output
+
+The CSV file will contain the following information for each food:
+- Name
+- Brand name
+- Classification
+- Nutritional values:
+  - Energy
+  - Fat
+  - Net Carbs
+  - Protein
+  - Sugar
+  - Fiber
+  - Calcium
+  - Sodium
+  - Saturated Fat
+  - Trans Fat
+  - Polyunsaturated Fat
+  - Monounsaturated Fat
+  - Omega-3 Fat
+  - Cholesterol
+  - Alcohol
+  - Potassium
+  - Iron
+  - Vitamin C 
+>>>>>>> 1de3c1a (feat: Add CalorieKing API data scraper)
