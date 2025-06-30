@@ -287,8 +287,8 @@ $ python calorie_king_scraper.py
 
 #### Step 2: Run Evaluation  
 ```bash
+$ export OPENAI_API_KEY=...... # Your OpenAI API key
 $ python nutrition_evaluator.py
-Enter OpenAI API key: sk-...
 Enter model name (default: gpt-4o-mini): 
 
 Evaluating gpt-4o-mini...
