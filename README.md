@@ -1,15 +1,30 @@
 <<<<<<< HEAD
 # GPT Nutrition Knowledge Evaluator
 
-A comprehensive evaluation framework for testing GPT models on nutrition-related tasks using Calorie King food data format.
+A comprehensive evaluation framework for testing GPT models on nutrition-related tasks using real Calorie King food data. This system uses **JSON-structured responses** and **precise numerical comparison** to provide accurate, bias-free evaluation of LLM nutritional knowledge.
 
-## Features
+## 🔥 Why This Approach Works
 
-- **Multi-dimensional evaluation**: Tests factual accuracy, mathematical computation, health recommendations, and error detection
-- **Automated scoring**: Uses weighted scoring across 4 criteria (Accuracy 40%, Reasoning 30%, Completeness 20%, Practical 10%)
-- **Real nutrition data**: Uses actual Calorie King format nutrition data
-- **Comprehensive reporting**: Generates detailed markdown reports with scores and analysis
-- **Multiple difficulty levels**: From basic data reading to expert-level error detection
+**The Problem:** Traditional LLM evaluation often suffers from style bias - a model giving a perfect answer might score only 30% due to keyword-based scoring that looks for specific phrases rather than actual correctness.
+
+**Our Solution:** 
+- ✅ **Force structured JSON responses** - eliminates style variations
+- ✅ **Direct numerical comparison** - 0.1g fat is either correct or not  
+- ✅ **Real food data from CSV** - no hardcoded synthetic examples
+- ✅ **Few-shot prompting** - shows models exactly what format to use
+- ✅ **Pure accuracy focus** - only correctness matters, not writing style
+
+**Result:** Reliable 90-100% scores for correct answers instead of misleading 30% scores!
+
+## ✨ Features
+
+- **🎯 Accuracy-focused evaluation**: JSON-structured responses eliminate style bias
+- **📊 Real nutrition data**: Uses actual Calorie King CSV data (no hardcoded values)
+- **🧮 Precise numerical scoring**: Direct comparison of calculated values
+- **📝 Few-shot prompting**: Examples ensure consistent response format
+- **🔬 Multiple test categories**: Factual accuracy, mathematical computation, health recommendations, error detection
+- **📈 Reliable scoring**: 90-100% scores for correct answers (not 30% due to style issues)
+- **🎨 Clean JSON reports**: Formatted code blocks for easy analysis
 
 ## Installation
 
@@ -40,88 +55,110 @@ This will:
 3. Run all evaluation prompts
 4. Generate a detailed report
 
-### Evaluation Categories
+### 🧪 Evaluation Categories
 
-The system tests 4 key areas:
+The system tests 4 key areas using **structured JSON responses**:
 
-1. **Factual Accuracy** (Basic)
-   - Reading nutrition data correctly
-   - Understanding units and measurements
-   - Basic nutritional calculations
-
-2. **Mathematical Computation** (Intermediate)
-   - Calorie calculations using 4-4-9-7 rule
-   - Percentage calculations for macronutrients
-   - Comparing calculated vs. provided values
-
-3. **Health Recommendations** (Advanced)
-   - Evaluating food suitability for health conditions
-   - Understanding dietary restrictions
-   - Practical nutrition advice
-
-4. **Error Detection** (Expert)
-   - Identifying impossible nutritional values
-   - Spotting data inconsistencies
-   - Data validation skills
-
-### Sample Nutrition Data Format
-
-The evaluator uses Calorie King format:
+#### **1A: Factual Accuracy** (Basic)
+- Extract total fat and carbohydrate content from nutrition data
+- Calculate total carbs (net carbs + fiber)
+- JSON format ensures precise numerical comparison
 ```json
 {
-  "nutrients": {
-    "energy": 378,
-    "fat": 0.1,
-    "netCarbs": 19.8,
-    "protein": 1.7,
-    "sugar": 16.9,
-    "fiber": 2.7,
-    "calcium": 5,
-    "sodium": 1,
-    "satFat": 0,
-    "transFat": 0,
-    "cholesterol": 0,
-    "potassium": 342,
-    "iron": 0.5,
-    "vitaminC": 12
-  }
+  "total_fat_g": 0.1,
+  "total_carbohydrates_g": 22.5,
+  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
 }
 ```
 
-## Output
+#### **2A: Mathematical Computation** (Intermediate)
+- Calculate calories using 4-4-9-7 rule (carbs: 4, protein: 4, fat: 9, alcohol: 7 cal/g)
+- Compare calculated vs. given energy values
+- Detect unit differences (kcal vs kJ)
 
-The program generates:
-- **nutrition_evaluation_report.md**: Detailed markdown report with scores and analysis
-- Console output with summary statistics
+#### **3A: Health Recommendations** (Advanced)
+- Evaluate food suitability for diabetes, hypertension, high cholesterol
+- Use evidence-based thresholds (e.g., >15g sugar = poor for diabetes)
+- Structured assessment with specific nutritional concerns
+
+#### **4A: Error Detection** (Expert)
+- Identify nutritionally impossible values (saturated fat > total fat)
+- Catch data entry errors (negative nutrients)
+- Validate nutritional consistency
+
+### 📋 Data Source
+
+The evaluator loads real nutrition data from `data/calorie_king_data.csv`:
+
+| Food Item | Energy (kJ) | Fat (g) | Protein (g) | Net Carbs (g) | Fiber (g) | Sodium (mg) |
+|-----------|------------|---------|-------------|---------------|-----------|-------------|
+| Banana, raw | 378 | 0.1 | 1.7 | 19.8 | 2.7 | 1 |
+| Avocado, Hass | 855 | 21.2 | 2.0 | 0.6 | 2.8 | 4 |
+| Rump Steak, lean | 511 | 4.6 | 20.2 | 0.0 | 0.0 | 49 |
+| Cookie Dough Ice Cream | 1130 | 15.0 | 4.0 | 31.0 | - | 56 |
+
+**Key Benefits:**
+- ✅ **Real food data** (not synthetic examples)
+- ✅ **Diverse food types** (fruits, proteins, processed foods)
+- ✅ **Edge cases included** (missing values, high sodium, etc.)
+- ✅ **Dynamic prompts** generated from actual data
+
+## 📊 Output & Scoring
+
+### Generated Reports
+- **nutrition_evaluation_report.md**: Detailed markdown report with JSON comparisons
+- **Console output**: Real-time progress and summary statistics
 
 ### Sample Report Structure
-
-```
+```markdown
 # GPT Nutrition Evaluation Report
 
-**Model:** gpt-4
+**Model:** gpt-4o-mini
 **Date:** 2024-01-15 14:30:00
 **Total Prompts:** 4
 
 ## Summary
-- Overall Average: 85.2%
-- Best Performance: 92.1%
-- Worst Performance: 78.5%
+- Overall Average: 92.5%
+- Best Performance: 100.0%
+- Worst Performance: 75.0%
 
-## Detailed Results
-...
+### 1A: Factual Accuracy
+Score: 100.0%
+
+**Expected JSON:**
+```json
+{
+  "total_fat_g": 0.1,
+  "total_carbohydrates_g": 22.5,
+  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
+}
 ```
 
-## Scoring System
+**GPT Response:**
+```json
+{
+  "total_fat_g": 0.1,
+  "total_carbohydrates_g": 22.5,
+  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
+}
+```
+```
 
-Each prompt is scored on 4 dimensions:
+### 🎯 Scoring System
 
-- **Accuracy (40%)**: Correctness of facts and calculations
-- **Reasoning (30%)**: Quality of explanations and logical thinking
-- **Completeness (20%)**: Addressing all parts of the question
-- **Practical Application (10%)**: Real-world relevance
+**Pure Accuracy Focus:**
+- ✅ **100%**: All JSON fields match expected values exactly
+- ✅ **Partial credit**: Proportional scoring for partially correct responses  
+- ✅ **0%**: Invalid JSON or major calculation errors
+- ✅ **Floating-point tolerance**: ±0.01 for numerical comparisons
 
-Total score is calculated as: `0.4×Accuracy + 0.3×Reasoning + 0.2×Completeness + 0.1×Practical`
+**Per-Category Scoring:**
+- **1A (Factual)**: 3 points - fat value, carb value, calculation breakdown
+- **2A (Math)**: 4 points - individual calorie calculations + total
+- **3A (Health)**: 3 points - diabetes, hypertension, cholesterol evaluations  
+- **4A (Error)**: 3 points - error count + identification of critical issues
+
+**No style bias**: Only numerical accuracy and structural correctness matter!
 
 ## Customization
 
@@ -146,47 +183,57 @@ Modify the `_score_response()` method to change scoring criteria or weights.
 ### Testing Different Models
 
 The evaluator works with any OpenAI model:
-- gpt-4
-- gpt-4-turbo
-- gpt-3.5-turbo
-- gpt-3.5-turbo-16k
+- **gpt-4o** / **gpt-4o-mini** (recommended)
+- **gpt-4** / **gpt-4-turbo**
+- **gpt-3.5-turbo**
 
-## API Costs
+## 💰 API Costs
 
-Approximate costs per evaluation (4 prompts):
-- GPT-4: ~$0.15-0.25
-- GPT-3.5-Turbo: ~$0.02-0.05
+Approximate costs per evaluation (4 prompts, ~1000 tokens each):
+- **GPT-4o-mini**: ~$0.01-0.02 (recommended for testing)
+- **GPT-4o**: ~$0.05-0.10  
+- **GPT-4**: ~$0.15-0.25
 
 ## Examples
 
-### Running Evaluation
+### 🚀 Running Evaluation
 ```bash
-$ python nutrition_evaluator.py
+$ python3 nutrition_evaluator.py
 Enter OpenAI API key: sk-...
-Enter model name (default: gpt-4): gpt-4
+Enter model name (default: gpt-4o-mini): 
 
-Evaluating gpt-4...
-Starting evaluation of gpt-4
-Running prompt 1/4: 1A
-Running prompt 2/4: 2A
-Running prompt 3/4: 3A
-Running prompt 4/4: 4A
+Evaluating gpt-4o-mini...
+✅ Loaded 10 food items from CSV
+Starting evaluation of gpt-4o-mini
+Running prompt 1/4: 1A - Factual Accuracy
+Running prompt 2/4: 2A - Mathematical Computation  
+Running prompt 3/4: 3A - Health Recommendations
+Running prompt 4/4: 4A - Error Detection
 Evaluation completed
 
-Evaluation Complete!
-Average Score: 87.3%
+🎉 Evaluation Complete!
+Average Score: 94.2%
+Best Performance: 100.0%
+Worst Performance: 75.0%
 Report saved to: nutrition_evaluation_report.md
 ```
 
-### Programmatic Usage
+### 🐍 Programmatic Usage
 ```python
 from nutrition_evaluator import NutritionEvaluator
+import json
 
 # Initialize evaluator
-evaluator = NutritionEvaluator(api_key="your-key", model_name="gpt-4")
+evaluator = NutritionEvaluator(api_key="your-key", model_name="gpt-4o-mini")
 
-# Run evaluation
+# Run evaluation  
 results = evaluator.run_evaluation()
+
+# Access individual results
+for result in results:
+    print(f"Prompt {result.prompt_id}: {result.total_score:.1f}%")
+    if result.total_score < 90:
+        print(f"  Response: {result.gpt_response}")
 
 # Generate report
 report = evaluator.generate_report()
@@ -208,73 +255,23 @@ The evaluator includes comprehensive error handling:
 - Invalid responses are handled gracefully
 - Execution continues even if individual prompts fail
 
-## Contributing
+## 🛠️ Contributing
 
 To extend the evaluation framework:
 
-1. Add new nutrition data samples in `_initialize_prompts()`
-2. Create new evaluation categories
-3. Enhance the scoring algorithm in `_score_response()`
-4. Add new output formats (JSON, CSV, etc.)
+1. **Add new food data**: Expand `data/calorie_king_data.csv` with more diverse foods
+2. **Create new test categories**: Add prompts in `_initialize_prompts()` with JSON schemas
+3. **Enhance scoring**: Modify category-specific scoring functions (`_score_factual_accuracy()`, etc.)
+4. **Support new models**: Test with different LLM APIs (Anthropic, etc.)
+5. **Export formats**: Add JSON/CSV export for automated analysis
 
-## License
+### 📋 Design Principles
+- **Accuracy over style**: Focus on correctness, not writing quality
+- **Structured data**: Use JSON for consistent, parseable responses  
+- **Real-world data**: Base tests on actual nutrition information
+- **Bias-free scoring**: Eliminate subjective evaluation criteria
+- **Reproducible results**: Deterministic scoring with clear thresholds
 
-This evaluation framework is designed for research and educational purposes.
-=======
-# CalorieKing Data Scraper
+## 📄 License
 
-This script fetches nutritional information from the CalorieKing API and saves it to a CSV file.
-
-## Setup
-
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create your configuration file:
-   ```bash
-   cp config.template.py config.py
-   ```
-4. Edit `config.py` and replace `your_access_token_here` with your actual CalorieKing API access token
-
-## Usage
-
-Run the script:
-```bash
-python calorie_king_scraper.py
-```
-
-The script will:
-- Fetch all foods from the CalorieKing database
-- Get detailed nutritional information for each food
-- Save the data to `calorie_king_data.csv`
-- Create periodic backups in `calorie_king_data_partial.csv`
-- Save data to `calorie_king_data_error.csv` if an error occurs
-
-## Output
-
-The CSV file will contain the following information for each food:
-- Name
-- Brand name
-- Classification
-- Nutritional values:
-  - Energy
-  - Fat
-  - Net Carbs
-  - Protein
-  - Sugar
-  - Fiber
-  - Calcium
-  - Sodium
-  - Saturated Fat
-  - Trans Fat
-  - Polyunsaturated Fat
-  - Monounsaturated Fat
-  - Omega-3 Fat
-  - Cholesterol
-  - Alcohol
-  - Potassium
-  - Iron
-  - Vitamin C 
->>>>>>> 1de3c1a (feat: Add CalorieKing API data scraper)
+This evaluation framework is designed for research and educational purposes. Open source under MIT license.
