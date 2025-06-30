@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # GPT Nutrition Knowledge Evaluator
 
 A comprehensive evaluation framework for testing GPT models on nutrition-related tasks using real Calorie King food data. This system uses **JSON-structured responses** and **precise numerical comparison** to provide accurate, bias-free evaluation of LLM nutritional knowledge.
