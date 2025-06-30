@@ -37,11 +37,14 @@ def get_food_details(revision_id: str) -> Dict:
     )
     return response.json()
 
-def save_to_csv(foods_data: List[Dict], filename: str = 'calorie_king_data.csv'):
+def save_to_csv(foods_data: List[Dict], filename: str = '../data/calorie_king_data.csv'):
     """Save the collected data to a CSV file."""
     if not foods_data:
         print("No data to save!")
         return
+
+    # Ensure the data directory exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     # Define the fields we want to save
     fieldnames = [
@@ -119,14 +122,14 @@ def main():
         # Save final results
         save_to_csv(all_foods_data)
         print(f"\nData collection completed! Total foods processed: {total_processed}")
-        print("Data saved to 'calorie_king_data.csv'")
+        print("Data saved to '../data/calorie_king_data.csv'")
 
     except Exception as e:
         print(f"An error occurred: {str(e)}")
         # Save whatever data we collected before the error
         if all_foods_data:
-            save_to_csv(all_foods_data, 'calorie_king_data_error.csv')
-            print("Partial data saved to 'calorie_king_data_error.csv'")
+            save_to_csv(all_foods_data, '../data/calorie_king_data_error.csv')
+            print("Partial data saved to '../data/calorie_king_data_error.csv'")
 
 if __name__ == "__main__":
     main() 

@@ -25,6 +25,22 @@ A comprehensive evaluation framework for testing GPT models on nutrition-related
 - **📈 Reliable scoring**: 90-100% scores for correct answers (not 30% due to style issues)
 - **🎨 Clean JSON reports**: Formatted code blocks for easy analysis
 
+## Project Structure
+
+```
+benchmark/
+├── src/                          # Source code directory
+│   ├── calorie_king_scraper.py   # Data collection script
+│   ├── nutrition_evaluator.py    # Main evaluation framework
+│   └── config.py                 # API configuration
+├── data/                         # Generated data directory
+│   └── calorie_king_data.csv     # Scraped nutrition data
+├── report/                       # Generated reports directory
+│   └── nutrition_evaluation_report.md  # Evaluation results
+├── requirements.txt              # Python dependencies
+└── README.md                     # This file
+```
+
 ## Installation
 
 1. Install required packages:
@@ -53,6 +69,7 @@ Before running evaluations, you need nutrition data. Use the included scraper to
 
 2. **Run the Scraper**:
    ```bash
+   cd src
    python calorie_king_scraper.py
    ```
 
@@ -61,13 +78,13 @@ Before running evaluations, you need nutrition data. Use the included scraper to
    🔍 Fetching foods from CalorieKing API...
    📦 Found 500+ food items
    📋 Getting detailed nutrition for each item...
-   💾 Saving to data/calorie_king_data.csv
+   💾 Saving to ../data/calorie_king_data.csv
    ✅ Data collection complete!
    ```
 
 ### Step 2: Verify Data Structure
 
-The scraper creates `data/calorie_king_data.csv` with this format:
+The scraper creates `data/calorie_king_data.csv` (from the project root) with this format:
 ```csv
 name,brand_name,classification,energy,fat,netCarbs,protein,sugar,fiber,calcium,sodium,satFat,transFat,cholesterol,potassium,iron,vitaminC
 "Banana, raw, edible portion",- Average All Brands -,"Fruit, fresh",378.0,0.1,19.8,1.7,16.9,2.7,5.0,1.0,0.0,0.0,0.0,342.0,0.5,12.0
@@ -78,12 +95,13 @@ name,brand_name,classification,energy,fat,netCarbs,protein,sugar,fiber,calcium,s
 
 The nutrition evaluator automatically loads this CSV data:
 ```bash
+cd src
 python nutrition_evaluator.py
 ```
 
 **Data Flow:**
 ```
-calorie_king_scraper.py → data/calorie_king_data.csv → nutrition_evaluator.py → evaluation_report.md
+src/calorie_king_scraper.py → data/calorie_king_data.csv → src/nutrition_evaluator.py → report/nutrition_evaluation_report.md
 ```
 
 ### Step 4: How Evaluation Uses Scraped Data
@@ -113,8 +131,9 @@ processed_data = next((food for food in foods if "Cookie Dough" in food["name"])
 
 ### Basic Usage
 
-Run the evaluator with default settings:
+Navigate to the src directory and run the evaluator with default settings:
 ```bash
+cd src
 python nutrition_evaluator.py
 ```
 
@@ -157,7 +176,7 @@ The system tests 4 key areas using **structured JSON responses**:
 
 ### 📋 Data Source & Scraper Features
 
-The evaluator loads real nutrition data from `data/calorie_king_data.csv` collected by our scraper:
+The evaluator loads real nutrition data from `../data/calorie_king_data.csv` (relative to src directory) collected by our scraper:
 
 | Food Item | Energy (kJ) | Fat (g) | Protein (g) | Net Carbs (g) | Fiber (g) | Sodium (mg) |
 |-----------|------------|---------|-------------|---------------|-----------|-------------|
@@ -182,7 +201,7 @@ The evaluator loads real nutrition data from `data/calorie_king_data.csv` collec
 ## 📊 Output & Scoring
 
 ### Generated Reports
-- **nutrition_evaluation_report.md**: Detailed markdown report with JSON comparisons
+- **../report/nutrition_evaluation_report.md**: Detailed markdown report with JSON comparisons
 - **Console output**: Real-time progress and summary statistics
 
 ### Sample Report Structure
@@ -276,12 +295,13 @@ Approximate costs per evaluation (4 prompts, ~1000 tokens each):
 
 #### Step 1: Collect Data
 ```bash
+$ cd src
 $ python calorie_king_scraper.py
 🔍 Connecting to CalorieKing API...
 📦 Found 523 food items
 📋 Fetching detailed nutrition data...
 [████████████████████] 100% (523/523)
-💾 Saved to data/calorie_king_data.csv
+💾 Saved to ../data/calorie_king_data.csv
 ✅ Data collection complete! 523 foods scraped
 ```
 
@@ -308,11 +328,14 @@ Evaluation completed
 Average Score: 94.2%
 Best Performance: 100.0%
 Worst Performance: 75.0%
-Report saved to: nutrition_evaluation_report.md
+Report saved to: ../report/nutrition_evaluation_report.md
 ```
 
 ### 🐍 Programmatic Usage
 ```python
+# From src directory or add src to Python path
+import sys
+sys.path.append('src')
 from nutrition_evaluator import NutritionEvaluator
 import json
 
@@ -342,6 +365,7 @@ print(report)
 3. **Model Not Found**: Ensure you have access to the specified model
 4. **Missing CSV Data**: If `data/calorie_king_data.csv` doesn't exist, run the scraper first:
    ```bash
+   cd src
    python calorie_king_scraper.py
    ```
 5. **Scraper Access Issues**: Configure your CalorieKing API token in `config.py`
@@ -358,7 +382,7 @@ The evaluator includes comprehensive error handling:
 
 To extend the evaluation framework:
 
-1. **Add new food data**: Expand `data/calorie_king_data.csv` with more diverse foods
+1. **Add new food data**: Expand `data/calorie_king_data.csv` with more diverse foods (located at project root)
 2. **Create new test categories**: Add prompts in `_initialize_prompts()` with JSON schemas
 3. **Enhance scoring**: Modify category-specific scoring functions (`_score_factual_accuracy()`, etc.)
 4. **Support new models**: Test with different LLM APIs (Anthropic, etc.)

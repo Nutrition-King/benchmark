@@ -45,7 +45,7 @@ class NutritionEvaluator:
         
     def _load_nutrition_data(self) -> List[Dict[str, Any]]:
         """Load nutrition data from CSV file."""
-        csv_path = "data/calorie_king_data.csv"
+        csv_path = "../data/calorie_king_data.csv"
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"Nutrition data file not found: {csv_path}")
         
@@ -595,14 +595,16 @@ def main():
     report = evaluator.generate_report()
     
     # Save report
-    with open("nutrition_evaluation_report.md", "w") as f:
+    report_path = "../report/nutrition_evaluation_report.md"
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with open(report_path, "w") as f:
         f.write(report)
     
     # Show summary
     total_scores = [r.total_score for r in results]
     print(f"\nEvaluation Complete!")
     print(f"Average Score: {statistics.mean(total_scores):.1f}%")
-    print(f"Report saved to: nutrition_evaluation_report.md")
+    print(f"Report saved to: {report_path}")
 
 if __name__ == "__main__":
     main() 
