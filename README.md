@@ -39,6 +39,76 @@ export OPENAI_API_KEY="your-api-key-here"
 
 Or you'll be prompted to enter it when running the program.
 
+## 📊 Data Collection Pipeline
+
+### Step 1: Collect Nutrition Data with CalorieKing Scraper
+
+Before running evaluations, you need nutrition data. Use the included scraper to collect real food data:
+
+1. **Configure API Access**:
+   ```bash
+   cp config.template.py config.py
+   # Edit config.py and add your CalorieKing API token
+   ```
+
+2. **Run the Scraper**:
+   ```bash
+   python calorie_king_scraper.py
+   ```
+
+3. **Data Collection Process**:
+   ```
+   🔍 Fetching foods from CalorieKing API...
+   📦 Found 500+ food items
+   📋 Getting detailed nutrition for each item...
+   💾 Saving to data/calorie_king_data.csv
+   ✅ Data collection complete!
+   ```
+
+### Step 2: Verify Data Structure
+
+The scraper creates `data/calorie_king_data.csv` with this format:
+```csv
+name,brand_name,classification,energy,fat,netCarbs,protein,sugar,fiber,calcium,sodium,satFat,transFat,cholesterol,potassium,iron,vitaminC
+"Banana, raw, edible portion",- Average All Brands -,"Fruit, fresh",378.0,0.1,19.8,1.7,16.9,2.7,5.0,1.0,0.0,0.0,0.0,342.0,0.5,12.0
+"Avocado, Hass, raw, edible portion",- Average All Brands -,"Fruit, fresh",855.0,21.2,0.6,2.0,0.6,2.8,12.0,4.0,5.1,0.0,0.0,520.0,0.0,0.0
+```
+
+### Step 3: Run LLM Evaluations
+
+The nutrition evaluator automatically loads this CSV data:
+```bash
+python nutrition_evaluator.py
+```
+
+**Data Flow:**
+```
+calorie_king_scraper.py → data/calorie_king_data.csv → nutrition_evaluator.py → evaluation_report.md
+```
+
+### Step 4: How Evaluation Uses Scraped Data
+
+The evaluator intelligently selects foods from your CSV for different test categories:
+
+```python
+# Automatic food selection from CSV data
+banana_data = next((food for food in foods if "Banana" in food["name"]), foods[0])      # Factual accuracy
+steak_data = next((food for food in foods if "Rump Steak" in food["name"]), foods[4])   # Error detection  
+processed_data = next((food for food in foods if "Cookie Dough" in food["name"]), foods[3])  # Health recommendations
+```
+
+**Smart Selection Criteria:**
+- 🍌 **Fruits** (banana, apple) → Factual accuracy & math calculations
+- 🥩 **Proteins** (steak, chicken) → Error detection with modified data
+- 🍦 **Processed foods** (ice cream, chips) → Health recommendations
+- 🥑 **Diverse items** → Comprehensive nutritional testing
+
+**Why This Works:**
+- ✅ **Real variability** in nutritional profiles for robust testing
+- ✅ **Automatic adaptation** to whatever foods you scrape
+- ✅ **Fallback selection** if specific foods aren't found
+- ✅ **No hardcoded values** - everything comes from your scraped data
+
 ## Usage
 
 ### Basic Usage
@@ -85,9 +155,9 @@ The system tests 4 key areas using **structured JSON responses**:
 - Catch data entry errors (negative nutrients)
 - Validate nutritional consistency
 
-### 📋 Data Source
+### 📋 Data Source & Scraper Features
 
-The evaluator loads real nutrition data from `data/calorie_king_data.csv`:
+The evaluator loads real nutrition data from `data/calorie_king_data.csv` collected by our scraper:
 
 | Food Item | Energy (kJ) | Fat (g) | Protein (g) | Net Carbs (g) | Fiber (g) | Sodium (mg) |
 |-----------|------------|---------|-------------|---------------|-----------|-------------|
@@ -96,11 +166,18 @@ The evaluator loads real nutrition data from `data/calorie_king_data.csv`:
 | Rump Steak, lean | 511 | 4.6 | 20.2 | 0.0 | 0.0 | 49 |
 | Cookie Dough Ice Cream | 1130 | 15.0 | 4.0 | 31.0 | - | 56 |
 
-**Key Benefits:**
-- ✅ **Real food data** (not synthetic examples)
-- ✅ **Diverse food types** (fruits, proteins, processed foods)
-- ✅ **Edge cases included** (missing values, high sodium, etc.)
-- ✅ **Dynamic prompts** generated from actual data
+**Scraper Features:**
+- 🔄 **Automatic backups** (`calorie_king_data_partial.csv` during collection)
+- ⚡ **Error recovery** (saves partial data if interrupted)
+- 📊 **Progress tracking** (shows collection status)
+- 🧹 **Data cleaning** (handles missing values and formatting)
+
+**Data Benefits:**
+- ✅ **Real food database** (500+ items from CalorieKing API)
+- ✅ **Diverse food types** (fruits, proteins, processed foods, beverages)
+- ✅ **Complete nutrition profiles** (20+ nutrients per item)
+- ✅ **Edge cases included** (missing values, extreme values for testing)
+- ✅ **Dynamic prompts** (evaluation tests generated from actual data)
 
 ## 📊 Output & Scoring
 
@@ -195,14 +272,31 @@ Approximate costs per evaluation (4 prompts, ~1000 tokens each):
 
 ## Examples
 
-### 🚀 Running Evaluation
+### 🚀 Complete Workflow: Data Collection to Evaluation
+
+#### Step 1: Collect Data
 ```bash
-$ python3 nutrition_evaluator.py
+$ python calorie_king_scraper.py
+🔍 Connecting to CalorieKing API...
+📦 Found 523 food items
+📋 Fetching detailed nutrition data...
+[████████████████████] 100% (523/523)
+💾 Saved to data/calorie_king_data.csv
+✅ Data collection complete! 523 foods scraped
+```
+
+#### Step 2: Run Evaluation  
+```bash
+$ python nutrition_evaluator.py
 Enter OpenAI API key: sk-...
 Enter model name (default: gpt-4o-mini): 
 
 Evaluating gpt-4o-mini...
-✅ Loaded 10 food items from CSV
+✅ Loaded 523 food items from CSV
+🍌 Selected Banana for factual accuracy tests
+🥩 Selected Rump Steak for error detection  
+🍦 Selected Cookie Dough Ice Cream for health recommendations
+
 Starting evaluation of gpt-4o-mini
 Running prompt 1/4: 1A - Factual Accuracy
 Running prompt 2/4: 2A - Mathematical Computation  
@@ -244,8 +338,14 @@ print(report)
 ### Common Issues
 
 1. **API Key Error**: Ensure your OpenAI API key is valid and has sufficient credits
-2. **Rate Limiting**: The program includes 1-second delays between requests
+2. **Rate Limiting**: The program includes 1-second delays between requests  
 3. **Model Not Found**: Ensure you have access to the specified model
+4. **Missing CSV Data**: If `data/calorie_king_data.csv` doesn't exist, run the scraper first:
+   ```bash
+   python calorie_king_scraper.py
+   ```
+5. **Scraper Access Issues**: Configure your CalorieKing API token in `config.py`
+6. **Small Dataset**: For testing without full scraper, create minimal CSV with 3-4 food items
 
 ### Error Handling
 
