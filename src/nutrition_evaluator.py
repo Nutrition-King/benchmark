@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-GPT Nutrition Knowledge Evaluator
+LLM Nutrition Knowledge Evaluator
+Supports both OpenAI and IBM WatsonX AI APIs
 """
 
 import json
@@ -8,15 +9,31 @@ import time
 import statistics
 import csv
 import os
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Literal
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+import difflib
 
+# OpenAI import (optional)
 try:
     from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    print("OpenAI package not found. Install with: pip install openai")
-    exit(1)
+    OPENAI_AVAILABLE = False
+
+# IBM WatsonX import (optional)
+try:
+    from ibm_watsonx_ai.foundation_models import ModelInference
+    from ibm_watsonx_ai import Credentials
+    WATSONX_AVAILABLE = True
+except ImportError:
+    WATSONX_AVAILABLE = False
+
+class APIProvider(Enum):
+    """Enum for supported API providers."""
+    OPENAI = "openai"
+    WATSONX = "watsonx"
 
 @dataclass
 class EvaluationResult:
@@ -25,7 +42,7 @@ class EvaluationResult:
     category: str
     difficulty: str
     prompt_text: str
-    gpt_response: str
+    llm_response: str
     expected_answer: str
     accuracy_score: float
     reasoning_score: float
@@ -34,15 +51,66 @@ class EvaluationResult:
     total_score: float
     execution_time: float
 
+@dataclass
+class APIConfig:
+    """Configuration for different API providers."""
+    provider: APIProvider
+    # OpenAI config
+    openai_api_key: Optional[str] = None
+    # WatsonX config
+    watsonx_api_key: Optional[str] = None
+    watsonx_url: Optional[str] = None
+    watsonx_project_id: Optional[str] = None
+
 class NutritionEvaluator:
-    """Main class for evaluating GPT models on nutrition knowledge tasks."""
+    """Main class for evaluating LLM models on nutrition knowledge tasks."""
     
-    def __init__(self, api_key: str, model_name: str = "gpt-4o-mini"):
-        self.client = OpenAI(api_key=api_key)
-        self.model_name = model_name
+    def __init__(self, api_config: APIConfig, model_name: str = None, verbose: bool = False):
+        self.api_config = api_config
+        self.model_name = model_name or self._get_default_model(api_config.provider)
         self.results: List[EvaluationResult] = []
         self.evaluation_prompts = self._initialize_prompts()
+        self.verbose = verbose
         
+        # Load nutrition data for meal lookups
+        self.nutrition_data = self._load_nutrition_data()
+        
+        # Initialize the appropriate client
+        if api_config.provider == APIProvider.OPENAI:
+            if not OPENAI_AVAILABLE:
+                raise ImportError("OpenAI package not found. Install with: pip install openai")
+            if not api_config.openai_api_key:
+                raise ValueError("OpenAI API key is required")
+            self.client = OpenAI(api_key=api_config.openai_api_key)
+        
+        elif api_config.provider == APIProvider.WATSONX:
+            if not WATSONX_AVAILABLE:
+                raise ImportError("IBM WatsonX package not found. Install with: pip install ibm-watsonx-ai")
+            if not all([api_config.watsonx_api_key, api_config.watsonx_url, api_config.watsonx_project_id]):
+                raise ValueError("WatsonX API key, URL, and project ID are all required")
+            
+            credentials = Credentials(
+                api_key=api_config.watsonx_api_key,
+                url=api_config.watsonx_url
+            )
+            self.client = ModelInference(
+                model_id=self.model_name,
+                credentials=credentials,
+                project_id=api_config.watsonx_project_id
+            )
+        
+        else:
+            raise ValueError(f"Unsupported API provider: {api_config.provider}")
+    
+    def _get_default_model(self, provider: APIProvider) -> str:
+        """Get default model for the specified provider."""
+        if provider == APIProvider.OPENAI:
+            return "gpt-4o-mini"
+        elif provider == APIProvider.WATSONX:
+            return "ibm/granite-3-8b-instruct"  # Confirmed available model
+        else:
+            raise ValueError(f"No default model for provider: {provider}")
+    
     def _load_nutrition_data(self) -> List[Dict[str, Any]]:
         """Load nutrition data from CSV file."""
         csv_path = "../data/calorie_king_data.csv"
@@ -351,33 +419,123 @@ Response format:
             }
         ]
     
-    def _query_gpt(self, prompt: str) -> Tuple[str, float]:
-        """Query GPT model and return response with execution time."""
+    def _query_llm(self, prompt: str) -> Tuple[str, float]:
+        """Query LLM model and return response with execution time."""
         start_time = time.time()
         
+        if self.verbose:
+            print(f"\n{'='*80}")
+            print(f"🔄 API CALL TO {self.api_config.provider.value.upper()}")
+            print(f"Model: {self.model_name}")
+            print(f"{'='*80}")
+            print(f"📤 PROMPT SENT:")
+            print(f"{'-'*40}")
+            print(prompt[:500] + "..." if len(prompt) > 500 else prompt)
+            print(f"{'-'*40}")
+        
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
+            if self.api_config.provider == APIProvider.OPENAI:
+                if self.verbose:
+                    print(f"🔵 Making OpenAI API call...")
+                    print(f"   API Key: {self.api_config.openai_api_key[:8]}...{self.api_config.openai_api_key[-4:]}")
+                
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a nutrition expert. CRITICAL: Respond ONLY with valid JSON. No text before or after JSON. Calculate all mathematical expressions to numerical values. Do not include formulas or expressions in JSON values."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.0,
+                    max_tokens=1000
+                )
+                
+                execution_time = time.time() - start_time
+                content = response.choices[0].message.content.strip()
+                
+                if self.verbose:
+                    print(f"📥 OPENAI RESPONSE RECEIVED:")
+                    print(f"   Response ID: {response.id}")
+                    print(f"   Model Used: {response.model}")
+                    print(f"   Tokens Used: {response.usage.total_tokens} (prompt: {response.usage.prompt_tokens}, completion: {response.usage.completion_tokens})")
+                    print(f"   Execution Time: {execution_time:.2f}s")
+                    print(f"{'-'*40}")
+                    print(content)
+                    print(f"{'-'*40}")
+                
+                return content, execution_time
+            
+            elif self.api_config.provider == APIProvider.WATSONX:
+                if self.verbose:
+                    print(f"🟢 Making WatsonX API call...")
+                    print(f"   API Key: {self.api_config.watsonx_api_key[:8]}...{self.api_config.watsonx_api_key[-4:]}")
+                    print(f"   URL: {self.api_config.watsonx_url}")
+                    print(f"   Project ID: {self.api_config.watsonx_project_id}")
+                
+                # For WatsonX, use the chat method for conversational models
+                messages = [
                     {"role": "system", "content": "You are a nutrition expert. CRITICAL: Respond ONLY with valid JSON. No text before or after JSON. Calculate all mathematical expressions to numerical values. Do not include formulas or expressions in JSON values."},
                     {"role": "user", "content": prompt}
-                ],
-                temperature=0.0,
-                max_tokens=1000
-            )
+                ]
+                
+                # Some WatsonX models may not support chat format, fallback to generate_text
+                try:
+                    if self.verbose:
+                        print(f"   Trying chat method first...")
+                    
+                    response = self.client.chat(messages=messages)
+                    content = response['choices'][0]['message']['content']
+                    
+                    if self.verbose:
+                        print(f"📥 WATSONX CHAT RESPONSE RECEIVED:")
+                        print(f"   Response structure: {list(response.keys())}")
+                        if 'usage' in response:
+                            print(f"   Token usage: {response.get('usage', 'N/A')}")
+                        print(f"   Raw response type: {type(response)}")
+                        
+                except (KeyError, AttributeError, TypeError) as e:
+                    if self.verbose:
+                        print(f"   Chat method failed ({e}), falling back to generate_text...")
+                    
+                    # Fallback to generate_text for non-chat models
+                    full_prompt = f"You are a nutrition expert. CRITICAL: Respond ONLY with valid JSON. No text before or after JSON. Calculate all mathematical expressions to numerical values. Do not include formulas or expressions in JSON values.\n\nUser: {prompt}\n\nAssistant:"
+                    response = self.client.generate_text(prompt=full_prompt)
+                    content = response
+                    
+                    if self.verbose:
+                        print(f"📥 WATSONX GENERATE_TEXT RESPONSE RECEIVED:")
+                        print(f"   Response type: {type(response)}")
+                
+                execution_time = time.time() - start_time
+                
+                if self.verbose:
+                    print(f"   Execution Time: {execution_time:.2f}s")
+                    print(f"{'-'*40}")
+                    print(content)
+                    print(f"{'-'*40}")
+                
+                return content.strip(), execution_time
             
-            execution_time = time.time() - start_time
-            return response.choices[0].message.content.strip(), execution_time
-            
+            else:
+                raise ValueError(f"Unsupported API provider: {self.api_config.provider}")
+                
         except Exception as e:
-            print(f"Error querying GPT: {e}")
-            return f"Error: {str(e)}", time.time() - start_time
+            error_msg = f"Error: {str(e)}"
+            execution_time = time.time() - start_time
+            
+            if self.verbose:
+                print(f"❌ API CALL FAILED:")
+                print(f"   Error: {error_msg}")
+                print(f"   Execution Time: {execution_time:.2f}s")
+                print(f"{'='*80}")
+            
+            print(f"Error querying LLM: {e}")
+            return error_msg, execution_time
     
-    def _score_response(self, prompt_data: Dict[str, Any], gpt_response: str) -> Dict[str, float]:
-        """Score a GPT response by comparing JSON output with expected JSON."""
+    def _score_response(self, prompt_data: Dict[str, Any], llm_response: str) -> Dict[str, float]:
+        """Score an LLM response by comparing JSON output with expected JSON."""
         try:
-            # Parse GPT response as JSON
-            response_json = json.loads(gpt_response.strip())
+            # Parse LLM response as JSON
+            response_json = json.loads(llm_response.strip())
             expected_json = prompt_data["expected_answer"]
             
             # Calculate accuracy based on JSON comparison
@@ -506,11 +664,11 @@ Response format:
         for i, prompt_data in enumerate(self.evaluation_prompts, 1):
             print(f"Running prompt {i}/{len(self.evaluation_prompts)}: {prompt_data['id']}")
             
-            # Query GPT
-            gpt_response, execution_time = self._query_gpt(prompt_data["prompt"])
+            # Query LLM
+            llm_response, execution_time = self._query_llm(prompt_data["prompt"])
             
             # Score the response
-            scores = self._score_response(prompt_data, gpt_response)
+            scores = self._score_response(prompt_data, llm_response)
             
             # Create result
             result = EvaluationResult(
@@ -518,7 +676,7 @@ Response format:
                 category=prompt_data["category"],
                 difficulty=prompt_data["difficulty"],
                 prompt_text=prompt_data["prompt"],
-                gpt_response=gpt_response,
+                llm_response=llm_response,
                 expected_answer=prompt_data["expected_answer"],
                 accuracy_score=scores["accuracy"],
                 reasoning_score=scores["reasoning"],
@@ -542,9 +700,12 @@ Response format:
         total_scores = [r.total_score for r in self.results]
         avg_total = statistics.mean(total_scores)
         
+        provider_name = self.api_config.provider.value.upper()
+        
         report = f"""
-# GPT Nutrition Evaluation Report
+# {provider_name} Nutrition Evaluation Report
 
+**Provider:** {provider_name}
 **Model:** {self.model_name}
 **Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Total Prompts:** {len(self.results)}
@@ -569,42 +730,282 @@ Response format:
             else:
                 report += f"**Expected:** {result.expected_answer}\n\n"
             
-            report += f"**GPT Response:**\n```json\n{result.gpt_response}\n```\n\n"
+            report += f"**LLM Response:**\n```json\n{result.llm_response}\n```\n\n"
             report += "---\n\n"
         
         return report
+
+    def lookup_meal_carbs(self, meal_name: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """
+        Look up carbohydrate information for a specific meal from the CalorieKing database.
+        
+        Args:
+            meal_name (str): Name of the meal/food to search for (e.g., "hard boiled egg")
+            max_results (int): Maximum number of results to return (default: 5)
+            
+        Returns:
+            List[Dict]: List of matching foods with carbohydrate information, sorted by relevance
+            
+        Example:
+            >>> evaluator = NutritionEvaluator(api_config)
+            >>> results = evaluator.lookup_meal_carbs("hard boiled egg")
+            >>> for food in results:
+            ...     print(f"{food['name']}: {food['carb_info']['total_carbs_g']}g carbs")
+        """
+        if not hasattr(self, 'nutrition_data'):
+            self.nutrition_data = self._load_nutrition_data()
+        
+        meal_name_lower = meal_name.lower()
+        matches = []
+        
+        # Search through all food items
+        for food in self.nutrition_data:
+            food_name_lower = food['name'].lower()
+            
+            # Calculate similarity score using different methods
+            scores = []
+            
+            # 1. Direct substring match (highest priority)
+            if meal_name_lower in food_name_lower:
+                scores.append(0.9)
+            elif any(word in food_name_lower for word in meal_name_lower.split()):
+                scores.append(0.7)
+            
+            # 2. Fuzzy string matching
+            similarity = difflib.SequenceMatcher(None, meal_name_lower, food_name_lower).ratio()
+            scores.append(similarity)
+            
+            # 3. Word-by-word matching
+            meal_words = set(meal_name_lower.split())
+            food_words = set(food_name_lower.split())
+            word_overlap = len(meal_words.intersection(food_words)) / len(meal_words.union(food_words)) if meal_words.union(food_words) else 0
+            scores.append(word_overlap)
+            
+            # Take the best score
+            best_score = max(scores) if scores else 0
+            
+            # Only include if there's some relevance
+            if best_score > 0.3:
+                # Calculate carbohydrate information
+                net_carbs = food['nutrients'].get('netCarbs', 0.0)
+                fiber = food['nutrients'].get('fiber', 0.0)
+                total_carbs = net_carbs + fiber if net_carbs and fiber else net_carbs
+                sugar = food['nutrients'].get('sugar', 0.0)
+                
+                match_info = {
+                    'name': food['name'],
+                    'brand': food['brand'],
+                    'category': food['category'],
+                    'relevance_score': best_score,
+                    'carb_info': {
+                        'net_carbs_g': net_carbs,
+                        'fiber_g': fiber,
+                        'total_carbs_g': total_carbs,
+                        'sugar_g': sugar
+                    },
+                    'other_nutrients': {
+                        'energy_kj': food['nutrients'].get('energy', 0.0),
+                        'protein_g': food['nutrients'].get('protein', 0.0),
+                        'fat_g': food['nutrients'].get('fat', 0.0),
+                        'sodium_mg': food['nutrients'].get('sodium', 0.0)
+                    }
+                }
+                matches.append(match_info)
+        
+        # Sort by relevance score (highest first)
+        matches.sort(key=lambda x: x['relevance_score'], reverse=True)
+        
+        # Return top results
+        return matches[:max_results]
+    
+    def print_meal_carb_info(self, meal_name: str, max_results: int = 5) -> None:
+        """
+        Print formatted carbohydrate information for a meal search.
+        
+        Args:
+            meal_name (str): Name of the meal/food to search for
+            max_results (int): Maximum number of results to display
+        """
+        results = self.lookup_meal_carbs(meal_name, max_results)
+        
+        if not results:
+            print(f"❌ No matches found for '{meal_name}'")
+            print("Try a more general term or check the spelling.")
+            return
+        
+        print(f"🔍 Carbohydrate information for '{meal_name}':")
+        print("=" * 80)
+        
+        for i, food in enumerate(results, 1):
+            carbs = food['carb_info']
+            other = food['other_nutrients']
+            
+            print(f"\n{i}. {food['name']}")
+            if food['brand'] and food['brand'] != "- Average All Brands -":
+                print(f"   Brand: {food['brand']}")
+            print(f"   Category: {food['category']}")
+            print(f"   Relevance: {food['relevance_score']:.1%}")
+            
+            print(f"\n   📊 CARBOHYDRATE BREAKDOWN:")
+            print(f"   • Total Carbohydrates: {carbs['total_carbs_g']:.1f}g")
+            print(f"   • Net Carbs: {carbs['net_carbs_g']:.1f}g")
+            print(f"   • Fiber: {carbs['fiber_g']:.1f}g") 
+            print(f"   • Sugar: {carbs['sugar_g']:.1f}g")
+            
+            print(f"\n   🍽️  OTHER NUTRIENTS:")
+            print(f"   • Energy: {other['energy_kj']:.0f} kJ")
+            print(f"   • Protein: {other['protein_g']:.1f}g")
+            print(f"   • Fat: {other['fat_g']:.1f}g")
+            print(f"   • Sodium: {other['sodium_mg']:.0f}mg")
+            
+            if i < len(results):
+                print("\n" + "-" * 40)
+        
+        print(f"\n✅ Found {len(results)} match(es) for '{meal_name}'")
+    
+    def enable_verbose_logging(self):
+        """Enable verbose API logging to see actual API calls and responses."""
+        self.verbose = True
+        print("✅ Verbose logging enabled - API calls and responses will be shown")
+    
+    def disable_verbose_logging(self):
+        """Disable verbose API logging."""
+        self.verbose = False
+        print("ℹ️ Verbose logging disabled")
 
 def main():
     """Main function to run evaluation."""
     import os
     
-    # Get API key
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        api_key = input("Enter OpenAI API key: ").strip()
+    print("🍎 LLM Nutrition Knowledge Evaluator")
+    print("=" * 50)
     
-    model_name = input("Enter model name (default: gpt-4o-mini): ").strip() or "gpt-4o-mini"
+    # Ask for verbose mode
+    verbose_choice = input("Enable verbose API logging? (y/N): ").strip().lower()
+    verbose = verbose_choice in ['y', 'yes', 'true', '1']
     
-    # Run evaluation
-    evaluator = NutritionEvaluator(api_key=api_key, model_name=model_name)
+    if verbose:
+        print("✅ Verbose mode enabled - will show detailed API calls and responses")
     
-    print(f"\nEvaluating {model_name}...")
+    # Choose API provider
+    print("\nChoose API provider:")
+    print("1. OpenAI")
+    print("2. IBM WatsonX")
+    
+    while True:
+        choice = input("Enter choice (1 or 2): ").strip()
+        if choice == "1":
+            provider = APIProvider.OPENAI
+            break
+        elif choice == "2":
+            provider = APIProvider.WATSONX
+            break
+        else:
+            print("Invalid choice. Please enter 1 or 2.")
+    
+    # Configure API based on choice
+    if provider == APIProvider.OPENAI:
+        print("\n--- OpenAI Configuration ---")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            api_key = input("Enter OpenAI API key: ").strip()
+        
+        # Show OpenAI model options
+        print("\nSelect OpenAI model:")
+        print("1. gpt-4o-mini (default - fast, cost-effective)")
+        print("2. gpt-4o (balanced performance)")
+        print("3. gpt-4 (highest quality)")
+        print("4. gpt-3.5-turbo (budget option)")
+        
+        model_choice = input("Enter choice (1-4, default 1): ").strip()
+        model_options = {
+            "1": "gpt-4o-mini",
+            "2": "gpt-4o", 
+            "3": "gpt-4",
+            "4": "gpt-3.5-turbo"
+        }
+        model_name = model_options.get(model_choice, "gpt-4o-mini")
+        
+        print(f"Selected model: {model_name}")
+        
+        api_config = APIConfig(
+            provider=APIProvider.OPENAI,
+            openai_api_key=api_key
+        )
+    
+    elif provider == APIProvider.WATSONX:
+        print("\n--- IBM WatsonX Configuration ---")
+        
+        # Try to get from environment variables first
+        watsonx_api_key = os.getenv("WATSONX_API_KEY")
+        watsonx_url = os.getenv("WATSONX_URL") 
+        watsonx_project_id = os.getenv("WATSONX_PROJECT_ID")
+        
+        # Prompt for missing values
+        if not watsonx_api_key:
+            watsonx_api_key = input("Enter WatsonX API key: ").strip()
+        if not watsonx_url:
+            watsonx_url = input("Enter WatsonX URL (default: https://us-south.ml.cloud.ibm.com): ").strip() or "https://us-south.ml.cloud.ibm.com"
+        if not watsonx_project_id:
+            watsonx_project_id = input("Enter WatsonX Project ID: ").strip()
+        
+        # Show WatsonX model options
+        print("\nSelect WatsonX model:")
+        print("1. ibm/granite-3-8b-instruct (default - fast, cost-effective)")
+        print("2. ibm/granite-13b-instruct-v2 (larger granite model)")
+        print("3. meta-llama/llama-3-3-70b-instruct (high quality)")
+        print("4. mistralai/mistral-large (alternative high quality)")
+        
+        model_choice = input("Enter choice (1-4, default 1): ").strip()
+        model_options = {
+            "1": "ibm/granite-3-8b-instruct",
+            "2": "ibm/granite-13b-instruct-v2",
+            "3": "meta-llama/llama-3-3-70b-instruct", 
+            "4": "mistralai/mistral-large"
+        }
+        model_name = model_options.get(model_choice, "ibm/granite-3-8b-instruct")
+        
+        print(f"Selected model: {model_name}")
+        
+        api_config = APIConfig(
+            provider=APIProvider.WATSONX,
+            watsonx_api_key=watsonx_api_key,
+            watsonx_url=watsonx_url,
+            watsonx_project_id=watsonx_project_id
+        )
+    
+    # Initialize evaluator
+    try:
+        evaluator = NutritionEvaluator(api_config=api_config, model_name=model_name, verbose=verbose)
+    except Exception as e:
+        print(f"Error initializing evaluator: {e}")
+        return
+    
+    print(f"\nEvaluating {evaluator.model_name} via {provider.value.upper()}...")
+    if verbose:
+        print("🔍 Verbose logging enabled - you'll see all API interactions below")
+    
     results = evaluator.run_evaluation()
     
     # Generate report
     report = evaluator.generate_report()
     
     # Save report
-    report_path = "../report/nutrition_evaluation_report.md"
+    report_path = f"../report/{provider.value}_nutrition_evaluation_report.md"
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
     with open(report_path, "w") as f:
         f.write(report)
     
     # Show summary
     total_scores = [r.total_score for r in results]
-    print(f"\nEvaluation Complete!")
+    print(f"\n{'='*60}")
+    print(f"🎉 Evaluation Complete!")
+    print(f"Provider: {provider.value.upper()}")
+    print(f"Model: {evaluator.model_name}")
     print(f"Average Score: {statistics.mean(total_scores):.1f}%")
     print(f"Report saved to: {report_path}")
+    if verbose:
+        print(f"✅ All API calls and responses were logged above for verification")
 
 if __name__ == "__main__":
     main() 
