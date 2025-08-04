@@ -12,7 +12,6 @@ import os
 import sys
 import re
 from typing import Dict, List, Optional, Any, Set
-from config import ACCESS_TOKEN
 
 class CalorieKingDirect:
     """Complete CalorieKing direct querying system."""
@@ -80,8 +79,11 @@ class CalorieKingDirect:
                     detailed_results.append(food_data)
                     
                     # Debug: show what we got
-                    carbs = food_data.get('netCarbs', 'Missing')
-                    print(f"    ✅ Got nutrition data - Carbs: {carbs}")
+                    carbs = food_data.get('netCarbs', food_data.get('totalCarbs', food_data.get('carbohydrates', 0)))
+                    if carbs == 0 and 'nutrients' in food_data:
+                        nutrients = food_data['nutrients']
+                        carbs = nutrients.get('netCarbs', nutrients.get('totalCarbs', nutrients.get('carbohydrates', 0)))
+                    print(f"    ✅ Got nutrition data - Carbs: {carbs}g")
                 else:
                     print(f"    ❌ No detailed nutrition data")
                 time.sleep(0.1)  # Rate limiting
@@ -117,79 +119,71 @@ class CalorieKingDirect:
         }
     
     def _search_foods(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Search for foods by name using the CalorieKing API."""
+        """Search for foods by name using the CalorieKing API's search functionality."""
         try:
-            query_keywords = self._extract_keywords(query)
-            matches = []
-            offset = 0
-            page_limit = 50
-            total_checked = 0
-            max_to_check = 1000  # Increased search scope
-            
             print(f"🔍 Searching CalorieKing database for '{query}'...")
+            
+            # Use the API's built-in search functionality
+            url = f"{self.base_url}/foods"
+            
+            # API only accepts specific limit values: [1, 5, 10, 20, 30, 50, 100, 1000]
+            api_limit = min(limit * 3, 100)
+            valid_limits = [1, 5, 10, 20, 30, 50, 100, 1000]
+            api_limit = min(valid_limits, key=lambda x: abs(x - api_limit))
+            
+            params = {
+                'query': query,
+                'region': 'us',  # Required region parameter
+                'limit': api_limit  # Use valid API limit
+            }
+            
+            response = requests.get(
+                url,
+                auth=(self.access_token, ''),
+                headers=self.headers,
+                params=params
+            )
+            response.raise_for_status()
+            search_response = response.json()
+            
+            if not search_response or 'foods' not in search_response:
+                print("❌ No search results returned from API")
+                return []
+            
+            foods = search_response['foods']
+            print(f"📋 API returned {len(foods)} search results")
+            
+            # Extract keywords for relevance scoring
+            query_keywords = self._extract_keywords(query)
             print(f"📝 Keywords: {query_keywords['main_keywords']}")
             print(f"🍽️  Food types: {query_keywords['food_types']}")
             print(f"👨‍🍳 Cooking methods: {query_keywords['cooking_methods']}")
             
-            while len(matches) < limit and total_checked < max_to_check:
-                try:
-                    # Get a page of foods
-                    foods_response = self._get_foods_page(offset, page_limit)
-                    
-                    if not foods_response or 'foods' not in foods_response:
-                        break
-                        
-                    foods = foods_response['foods']
-                    if not foods:
-                        break
-                    
-                    # Filter foods that match our query
-                    for food in foods:
-                        total_checked += 1
-                        food_name = food.get('name', '').lower()
-                        
-                        # Calculate relevance score with detailed breakdown
-                        score, score_breakdown = self._calculate_relevance_detailed(query_keywords, food_name, food)
-                        
-                        if score > 0.6:  # Much higher threshold
-                            food_with_score = food.copy()
-                            food_with_score['relevance_score'] = score
-                            food_with_score['score_breakdown'] = score_breakdown
-                            matches.append(food_with_score)
-                            print(f"  📝 Match: {food.get('name', 'Unknown')} (score: {score:.3f})")
-                            print(f"      💡 {score_breakdown}")
-                            
-                            if len(matches) >= limit:
-                                break
-                    
-                    offset += page_limit
-                    time.sleep(0.1)  # Rate limiting
-                    
-                except Exception as e:
-                    print(f"Error fetching foods page at offset {offset}: {str(e)}")
-                    break
+            # Score and filter the results
+            matches = []
+            for food in foods:
+                food_name = food.get('name', '').lower()
+                
+                # Calculate relevance score
+                score, score_breakdown = self._calculate_relevance_detailed(query_keywords, food_name, food)
+                
+                if score > 0.3:  # Lower threshold since API already filtered relevant results
+                    food_with_score = food.copy()
+                    food_with_score['relevance_score'] = score
+                    food_with_score['score_breakdown'] = score_breakdown
+                    matches.append(food_with_score)
+                    print(f"  📝 Match: {food.get('name', 'Unknown')} (score: {score:.3f})")
+                    print(f"      💡 {score_breakdown}")
             
             # Sort by relevance score
             matches.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-            print(f"📊 Found {len(matches)} matches after checking {total_checked} foods")
+            print(f"📊 Found {len(matches)} relevant matches")
+            
             return matches[:limit]
             
         except Exception as e:
             print(f"Error searching for '{query}': {str(e)}")
             return []
-    
-    def _get_foods_page(self, offset: int, limit: int) -> Dict:
-        """Fetch a page of foods from the API."""
-        url = f"{self.base_url}/foods"
-        params = {'offset': offset, 'limit': limit}
-        response = requests.get(
-            url,
-            auth=(self.access_token, ''),
-            headers=self.headers,
-            params=params
-        )
-        response.raise_for_status()
-        return response.json()
     
     def _get_food_details(self, revision_id: str) -> Optional[Dict[str, Any]]:
         """Get detailed nutrition information for a specific food."""
@@ -203,15 +197,6 @@ class CalorieKingDirect:
             response.raise_for_status()
             result = response.json()
             
-            # Debug: show the structure of what we got
-            if 'food' in result:
-                food_data = result['food']
-                print(f"    🔍 API returned food: {food_data.get('name', 'No name')}")
-                print(f"    🔍 Available keys: {list(food_data.keys())}")
-                if 'nutrients' in food_data:
-                    nutrients = food_data['nutrients']
-                    print(f"    🔍 Nutrients keys: {list(nutrients.keys())}")
-            
             return result
         except Exception as e:
             print(f"Error getting food details for {revision_id}: {str(e)}")
@@ -223,86 +208,104 @@ class CalorieKingDirect:
         breakdown_parts = []
         
         food_name_words = set(re.findall(r'\b\w+\b', food_name.lower()))
+        food_name_lower = food_name.lower()
         
-        # 1. EXACT keyword match with specificity bonus
+        # 1. EXACT multi-word phrase match (highest priority)
+        original_query_words = list(query_keywords['main_keywords'])
+        if len(original_query_words) > 1:
+            query_phrase = ' '.join(sorted(original_query_words))
+            if query_phrase in food_name_lower:
+                score += 2.0
+                breakdown_parts.append(f"exact_phrase:2.00")
+        
+        # 2. ALL keywords present (very high priority)
+        all_keywords_present = all(keyword in food_name_lower for keyword in query_keywords['main_keywords'])
+        if all_keywords_present and len(query_keywords['main_keywords']) > 1:
+            score += 1.5
+            breakdown_parts.append(f"all_keywords:1.50")
+        
+        # 3. Individual exact keyword matches with word boundary checking
         exact_match_score = 0
         specificity_bonus = 0
+        matched_keywords = 0
 
         for keyword in query_keywords['main_keywords']:
-            if keyword in food_name:
-                exact_match_score = 1.0
+            if keyword in food_name_lower:
+                matched_keywords += 1
                 
-                # Add specificity bonus for better matches
-                food_words = food_name.split()
-                
-                # Bonus for exact word match (not just substring)
-                if keyword in food_words:
+                # Check if it's an exact word match (not just substring)
+                if keyword in food_name_words:
+                    exact_match_score += 1.0
                     specificity_bonus += 0.2
-                    
-                # Bonus for fewer additional descriptors (simpler = better)
-                if len(food_words) <= 3:
-                    specificity_bonus += 0.1
-                    
-                # Penalty for processed/prepared versions when searching for basic food
-                if any(prep in food_name for prep in ['fried', 'battered', 'takeaway', 'block']):
-                    if not any(prep in query_keywords['all_words'] for prep in ['fried', 'battered', 'takeaway']):
-                        specificity_bonus -= 0.3
-                        
-                breakdown_parts.append(f"exact_match:{exact_match_score:.2f}+specificity:{specificity_bonus:.2f}")
-                break
+                else:
+                    # Partial match within a word
+                    exact_match_score += 0.5
+                
+        # Bonus for matching all keywords
+        if matched_keywords == len(query_keywords['main_keywords']) and len(query_keywords['main_keywords']) > 1:
+            specificity_bonus += 0.3
+            
+        # Bonus for fewer additional descriptors (simpler = better for basic searches)
+        food_words = food_name_lower.split()
+        if len(food_words) <= len(query_keywords['main_keywords']) + 1:
+            specificity_bonus += 0.2
+            
+        # Penalty for overly processed/prepared versions when searching for basic food
+        processed_terms = ['fried', 'battered', 'takeaway', 'block', 'frozen', 'canned', 'instant']
+        if any(term in food_name_lower for term in processed_terms):
+            if not any(term in query_keywords['all_words'] for term in processed_terms):
+                specificity_bonus -= 0.3
+                
+        if exact_match_score > 0:
+            breakdown_parts.append(f"exact_match:{exact_match_score:.2f}+specificity:{specificity_bonus:.2f}")
 
         score += exact_match_score + specificity_bonus
         
-        # 2. Only use category matching as fallback with lower score (0.3)
+        # 4. Food category matching (only as fallback with lower score)
         food_category_score = 0
         if exact_match_score == 0:  # Only if no exact match found
             for category in query_keywords['food_types']:
                 category_foods = self.food_types[category]
-                if any(food in food_name for food in category_foods):
-                    food_category_score = 0.3  # Much lower than exact match
+                if any(food in food_name_lower for food in category_foods):
+                    food_category_score = 0.4  # Slightly higher than before
                     breakdown_parts.append(f"category_fallback:{food_category_score:.2f}")
                     break
         score += food_category_score
         
-        # 3. Cooking method matches
+        # 5. Cooking method matches
         cooking_score = 0
         for method in query_keywords['cooking_methods']:
-            if method in food_name:
-                cooking_score = 0.3
+            if method in food_name_lower:
+                cooking_score = 0.4
                 breakdown_parts.append(f"cooking:{cooking_score:.2f}")
                 break
         score += cooking_score
         
-        # 4. Partial word matches (only if no exact match)
-        partial_score = 0
-        if exact_match_score == 0:
-            partial_matches = 0
-            for query_word in query_keywords['all_words']:
-                for food_word in food_name_words:
-                    if len(query_word) > 3 and (query_word in food_word or food_word in query_word):
-                        partial_matches += 1
-            if partial_matches > 0:
-                partial_score = min(partial_matches * 0.1, 0.2)
-                breakdown_parts.append(f"partial:{partial_score:.2f}")
-        score += partial_score
-        
-        # 5. NEGATIVE SCORING - Penalize wrong categories
+        # 6. NEGATIVE SCORING - Penalize wrong categories more heavily
         penalty = 0
         
-        # If searching for fish/meat, heavily penalize beverages, desserts
-        if query_keywords['food_types'].intersection({'fish', 'meat'}):
-            if any(beverage in food_name for beverage in self.food_types['beverages']):
-                penalty = 0.8
-                breakdown_parts.append(f"penalty_beverage:-{penalty:.2f}")
-            elif any(dessert in food_name for dessert in self.food_types['desserts']):
-                penalty = 0.7
-                breakdown_parts.append(f"penalty_dessert:-{penalty:.2f}")
+        # Strong penalty for wrong food type
+        if query_keywords['food_types'].intersection({'fish', 'meat', 'vegetables', 'grains'}):
+            # If searching for a specific food type, penalize results from very different types
+            wrong_categories = set()
+            if 'vegetables' in query_keywords['food_types']:
+                wrong_categories.update(['beverages', 'desserts', 'meat', 'fish'])
+            elif 'grains' in query_keywords['food_types']:
+                wrong_categories.update(['beverages', 'desserts', 'meat', 'fish', 'dairy'])
+            elif query_keywords['food_types'].intersection({'fish', 'meat'}):
+                wrong_categories.update(['beverages', 'desserts', 'vegetables', 'fruits'])
+                
+            for wrong_cat in wrong_categories:
+                if any(item in food_name_lower for item in self.food_types[wrong_cat]):
+                    penalty = 1.0
+                    breakdown_parts.append(f"penalty_wrong_category:-{penalty:.2f}")
+                    break
         
-        # If searching for non-alcoholic, penalize alcohol
-        if 'beer' in food_name or 'wine' in food_name or 'alcohol' in food_name:
-            if not any(alcohol_word in query_keywords['all_words'] for alcohol_word in ['beer', 'wine', 'alcohol']):
-                penalty = 0.9
-                breakdown_parts.append(f"penalty_alcohol:-{penalty:.2f}")
+        # Penalty for alcohol when not searching for it
+        if any(alcohol_word in food_name_lower for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
+            if not any(alcohol_word in query_keywords['all_words'] for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
+                penalty = max(penalty, 0.9)
+                breakdown_parts.append(f"penalty_alcohol:-0.90")
         
         score = max(0, score - penalty)
         
@@ -328,29 +331,75 @@ class CalorieKingDirect:
         
         # Show only the best match
         food = results[0]
-        # Try different possible keys for nutrition data
-        carbs = food.get('netCarbs', food.get('carbohydrates', 0))
-        protein = food.get('protein', 0)
-        fat = food.get('fat', 0)
-        energy = food.get('energy', 0)
+        self._display_nutrition_details(food)
+    
+    def _display_nutrition_details(self, food: Dict[str, Any]):
+        """Display detailed nutrition information for a food item."""
+        # Get base nutrition values (per 100g)
+        base_carbs = food.get('netCarbs', food.get('totalCarbs', food.get('carbohydrates', 0)))
+        base_protein = food.get('protein', 0)
+        base_fat = food.get('fat', 0)
+        base_energy = food.get('energy', 0)
+        base_fiber = food.get('fiber', 0)
         
         # If nutrients are nested, try to get them
-        if carbs == 0 and 'nutrients' in food:
+        if base_carbs == 0 and 'nutrients' in food:
             nutrients = food['nutrients']
-            carbs = nutrients.get('netCarbs', nutrients.get('carbohydrates', 0))
-            protein = nutrients.get('protein', 0)
-            fat = nutrients.get('fat', 0)
-            energy = nutrients.get('energy', 0)
+            base_carbs = nutrients.get('netCarbs', nutrients.get('totalCarbs', nutrients.get('carbohydrates', 0)))
+            base_protein = nutrients.get('protein', 0)
+            base_fat = nutrients.get('fat', 0)
+            base_energy = nutrients.get('energy', 0)
+            base_fiber = nutrients.get('fiber', 0)
         
         print(f"\n{food.get('name', 'Unknown')}")
         if food.get('brandName'):
             print(f"Brand: {food['brandName']}")
+        
+        # Get serving size information and calculate scaled nutrition
+        base_mass = food.get('mass', 100)
+        serving_scale = 1.0
+        
+        if 'defaultServing' in food:
+            default_serving = food['defaultServing']
+            serving_name = default_serving.get('name', 'Unknown serving')
+            serving_scale = default_serving.get('scale', 1.0)
+            calculated_mass = base_mass * serving_scale
+            
+            print(f"📏 Serving size: {serving_name} ({calculated_mass:.0f}g)")
+        elif 'servings' in food and food['servings']:
+            # Use first serving if no default
+            first_serving = food['servings'][0]
+            serving_name = first_serving.get('name', 'Unknown serving')
+            serving_scale = first_serving.get('scale', 1.0)
+            calculated_mass = base_mass * serving_scale
+            print(f"📏 Serving size: {serving_name} ({calculated_mass:.0f}g)")
+        else:
+            print(f"📏 Serving size: Per 100g")
+        
+        # Calculate actual serving nutrition by applying scale factor
+        carbs = base_carbs * serving_scale
+        protein = base_protein * serving_scale
+        fat = base_fat * serving_scale
+        fiber = base_fiber * serving_scale
+        energy = base_energy * serving_scale
+        
         print(f"Relevance: {food.get('relevance_score', 0):.2f}")
-        print(f"🥕 Carbs: {carbs}g")
-        print(f"🥩 Protein: {protein}g")
-        print(f"🥑 Fat: {fat}g")
+        print(f"🥕 Carbs: {carbs:.1f}g")
+        print(f"🥩 Protein: {protein:.1f}g")
+        print(f"🥑 Fat: {fat:.1f}g")
+        if fiber > 0:
+            print(f"🌾 Fiber: {fiber:.1f}g")
         if energy > 0:
-            print(f"⚡ Energy: {energy} kJ")
+            print(f"⚡ Energy: {energy:.0f} kJ")
+        
+        # Show nutrition per 100g for comparison
+        if serving_scale != 1.0:
+            print(f"\n📐 Per 100g (base values):")
+            print(f"🥕 Carbs: {base_carbs:.1f}g")
+            print(f"🥩 Protein: {base_protein:.1f}g") 
+            print(f"🥑 Fat: {base_fat:.1f}g")
+            if base_fiber > 0:
+                print(f"🌾 Fiber: {base_fiber:.1f}g")
     
     def get_best_match(self, food_name: str) -> Dict[str, Any]:
         """Get the best matching nutrition information for a food."""
@@ -359,19 +408,32 @@ class CalorieKingDirect:
         if results:
             best_match = results[0]
             
-            # Try different possible keys for nutrition data
-            carbs = best_match.get('netCarbs', best_match.get('carbohydrates', 0))
-            protein = best_match.get('protein', 0)
-            fat = best_match.get('fat', 0)
-            energy = best_match.get('energy', 0)
+            # Get base nutrition values (per 100g)
+            base_carbs = best_match.get('netCarbs', best_match.get('totalCarbs', best_match.get('carbohydrates', 0)))
+            base_protein = best_match.get('protein', 0)
+            base_fat = best_match.get('fat', 0)
+            base_energy = best_match.get('energy', 0)
             
             # If nutrients are nested, try to get them
-            if carbs == 0 and 'nutrients' in best_match:
+            if base_carbs == 0 and 'nutrients' in best_match:
                 nutrients = best_match['nutrients']
-                carbs = nutrients.get('netCarbs', nutrients.get('carbohydrates', 0))
-                protein = nutrients.get('protein', 0)
-                fat = nutrients.get('fat', 0)
-                energy = nutrients.get('energy', 0)
+                base_carbs = nutrients.get('netCarbs', nutrients.get('totalCarbs', nutrients.get('carbohydrates', 0)))
+                base_protein = nutrients.get('protein', 0)
+                base_fat = nutrients.get('fat', 0)
+                base_energy = nutrients.get('energy', 0)
+            
+            # Get serving scale factor
+            serving_scale = 1.0
+            if 'defaultServing' in best_match:
+                serving_scale = best_match['defaultServing'].get('scale', 1.0)
+            elif 'servings' in best_match and best_match['servings']:
+                serving_scale = best_match['servings'][0].get('scale', 1.0)
+            
+            # Apply scaling to get actual serving nutrition
+            carbs = base_carbs * serving_scale
+            protein = base_protein * serving_scale
+            fat = base_fat * serving_scale
+            energy = base_energy * serving_scale
             
             return {
                 "food_name": best_match.get('name', ''),
