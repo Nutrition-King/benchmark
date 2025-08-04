@@ -1,6 +1,10 @@
-# GPT Nutrition Knowledge Evaluator
+# LLM Nutrition Knowledge Evaluator
 
-A comprehensive evaluation framework for testing GPT models on nutrition-related tasks using real Calorie King food data. This system uses **JSON-structured responses** and **precise numerical comparison** to provide accurate, bias-free evaluation of LLM nutritional knowledge.
+A comprehensive evaluation framework for testing LLM models on nutrition-related tasks using real Calorie King food data. This system uses **JSON-structured responses** and **precise numerical comparison** to provide accurate, bias-free evaluation of LLM nutritional knowledge.
+
+**Supported APIs:**
+- 🔵 **OpenAI** (GPT-4, GPT-4o, GPT-3.5-turbo)
+- 🟢 **IBM WatsonX AI** (Granite, Llama, Mistral models)
 
 ## 🔥 Why This Approach Works
 
@@ -24,6 +28,8 @@ A comprehensive evaluation framework for testing GPT models on nutrition-related
 - **🔬 Multiple test categories**: Factual accuracy, mathematical computation, health recommendations, error detection
 - **📈 Reliable scoring**: 90-100% scores for correct answers (not 30% due to style issues)
 - **🎨 Clean JSON reports**: Formatted code blocks for easy analysis
+- **🔄 Multi-API support**: Choose between OpenAI and IBM WatsonX AI
+- **⚡ Easy configuration**: Environment variables or interactive setup
 
 ## Project Structure
 
@@ -31,13 +37,15 @@ A comprehensive evaluation framework for testing GPT models on nutrition-related
 benchmark/
 ├── src/                          # Source code directory
 │   ├── calorie_king_scraper.py   # Data collection script
-│   ├── nutrition_evaluator.py    # Main evaluation framework
+│   ├── nutrition_evaluator.py    # Main evaluation framework (multi-API)
 │   └── config.py                 # API configuration
 ├── data/                         # Generated data directory
 │   └── calorie_king_data.csv     # Scraped nutrition data
 ├── report/                       # Generated reports directory
-│   └── nutrition_evaluation_report.md  # Evaluation results
-├── requirements.txt              # Python dependencies
+│   ├── openai_nutrition_evaluation_report.md   # OpenAI results
+│   └── watsonx_nutrition_evaluation_report.md  # WatsonX results
+├── requirements.txt              # Python dependencies (includes both APIs)
+├── meal_lookup.py                # Standalone meal carbohydrate lookup utility
 └── README.md                     # This file
 ```
 
@@ -48,9 +56,23 @@ benchmark/
 pip install -r requirements.txt
 ```
 
-2. Set up your OpenAI API key:
+This will install dependencies for both OpenAI and IBM WatsonX AI APIs:
+- `openai>=1.0.0` (for OpenAI models)
+- `ibm-watsonx-ai>=1.1.0` (for IBM WatsonX models)
+- Other utility packages
+
+2. Set up API credentials (choose one or both):
+
+### Option A: OpenAI Setup
 ```bash
-export OPENAI_API_KEY="your-api-key-here"
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+### Option B: IBM WatsonX Setup
+```bash
+export WATSONX_API_KEY="your-watsonx-api-key"
+export WATSONX_URL="https://us-south.ml.cloud.ibm.com"
+export WATSONX_PROJECT_ID="your-project-id"
 ```
 
 Or you'll be prompted to enter it when running the program.
@@ -127,234 +149,312 @@ processed_data = next((food for food in foods if "Cookie Dough" in food["name"])
 - ✅ **Fallback selection** if specific foods aren't found
 - ✅ **No hardcoded values** - everything comes from your scraped data
 
-## Usage
+## 🍽️ Meal Carbohydrate Lookup
 
-### Basic Usage
+In addition to LLM evaluation, this project includes a **standalone meal lookup utility** that searches the CalorieKing database for carbohydrate information.
 
-Navigate to the src directory and run the evaluator with default settings:
+### Quick Lookup Examples
+
+```bash
+# Interactive mode - search for any meal
+python3 meal_lookup.py
+
+# Example searches
+🔍 Enter meal name: hard boiled egg
+🔍 Enter meal name: banana  
+🔍 Enter meal name: chicken breast
+```
+
+### Programmatic Usage
+
+```python
+from meal_lookup import MealLookup
+
+# Initialize lookup
+lookup = MealLookup()
+
+# Search for carbohydrate info
+results = lookup.search("hard boiled egg")
+for food in results:
+    print(f"{food['name']}: {food['carb_info']['total_carbs_g']:.1f}g carbs")
+
+# Quick carb value only
+carbs = lookup.get_carbs_only("banana")  # Returns: 22.5
+
+# Pretty print detailed results
+lookup.print_results("chicken", max_results=3)
+```
+
+### Search Features
+
+- **🔍 Fuzzy matching**: Finds foods even with approximate spelling
+- **📊 Complete carb breakdown**: Total carbs, net carbs, fiber, sugar
+- **🥗 Additional nutrients**: Energy, protein, fat, sodium  
+- **⭐ Relevance scoring**: Results ranked by match quality
+- **🎯 Multiple results**: Shows top matches for broader searches
+
+### Sample Output
+
+```
+🔍 Carbohydrate information for 'banana':
+================================================================================
+
+1. Banana, raw, edible portion
+   Category: Fruit, fresh
+   Relevance: 90.0%
+
+   📊 CARBOHYDRATE BREAKDOWN:
+   • Total Carbohydrates: 22.5g
+   • Net Carbs: 19.8g
+   • Fiber: 2.7g
+   • Sugar: 16.9g
+
+   🍽️  OTHER NUTRIENTS:
+   • Energy: 378 kJ
+   • Protein: 1.7g
+   • Fat: 0.1g
+   • Sodium: 1mg
+```
+
+## Quick Start
+
+### Method 1: Interactive Mode (Recommended)
 ```bash
 cd src
 python nutrition_evaluator.py
 ```
 
-This will:
-1. Prompt for your OpenAI API key (if not set as environment variable)
-2. Ask for the model name to evaluate (default: gpt-4)
-3. Run all evaluation prompts
-4. Generate a detailed report
+The evaluator will prompt you to:
+1. **Choose API provider** (OpenAI or IBM WatsonX)
+2. **Enter credentials** (or use environment variables)
+3. **Select model** (or use defaults)
 
-### 🧪 Evaluation Categories
+#### Sample Interactive Session:
+```
+🍎 LLM Nutrition Knowledge Evaluator
+==================================================
+Enable verbose API logging? (y/N): y
+✅ Verbose mode enabled - will show detailed API calls and responses
 
-The system tests 4 key areas using **structured JSON responses**:
+Choose API provider:
+1. OpenAI
+2. IBM WatsonX
+Enter choice (1 or 2): 2
 
-#### **1A: Factual Accuracy** (Basic)
-- Extract total fat and carbohydrate content from nutrition data
-- Calculate total carbs (net carbs + fiber)
-- JSON format ensures precise numerical comparison
-```json
-{
-  "total_fat_g": 0.1,
-  "total_carbohydrates_g": 22.5,
-  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
-}
+--- IBM WatsonX Configuration ---
+Enter WatsonX API key: [using environment variable]
+Enter WatsonX URL (default: https://us-south.ml.cloud.ibm.com): [using default]
+Enter WatsonX Project ID: [using environment variable]
+
+Select WatsonX model:
+1. ibm/granite-3-8b-instruct (default - fast, cost-effective)
+2. ibm/granite-13b-instruct-v2 (larger granite model)
+3. meta-llama/llama-3-3-70b-instruct (high quality)
+4. mistralai/mistral-large (alternative high quality)
+Enter choice (1-4, default 1): 1
+Selected model: ibm/granite-3-8b-instruct
+
+Evaluating ibm/granite-3-8b-instruct via WATSONX...
+🔍 Verbose logging enabled - you'll see all API interactions below
 ```
 
-#### **2A: Mathematical Computation** (Intermediate)
-- Calculate calories using 4-4-9-7 rule (carbs: 4, protein: 4, fat: 9, alcohol: 7 cal/g)
-- Compare calculated vs. given energy values
-- Detect unit differences (kcal vs kJ)
-
-#### **3A: Health Recommendations** (Advanced)
-- Evaluate food suitability for diabetes, hypertension, high cholesterol
-- Use evidence-based thresholds (e.g., >15g sugar = poor for diabetes)
-- Structured assessment with specific nutritional concerns
-
-#### **4A: Error Detection** (Expert)
-- Identify nutritionally impossible values (saturated fat > total fat)
-- Catch data entry errors (negative nutrients)
-- Validate nutritional consistency
-
-### 📋 Data Source & Scraper Features
-
-The evaluator loads real nutrition data from `../data/calorie_king_data.csv` (relative to src directory) collected by our scraper:
-
-| Food Item | Energy (kJ) | Fat (g) | Protein (g) | Net Carbs (g) | Fiber (g) | Sodium (mg) |
-|-----------|------------|---------|-------------|---------------|-----------|-------------|
-| Banana, raw | 378 | 0.1 | 1.7 | 19.8 | 2.7 | 1 |
-| Avocado, Hass | 855 | 21.2 | 2.0 | 0.6 | 2.8 | 4 |
-| Rump Steak, lean | 511 | 4.6 | 20.2 | 0.0 | 0.0 | 49 |
-| Cookie Dough Ice Cream | 1130 | 15.0 | 4.0 | 31.0 | - | 56 |
-
-**Scraper Features:**
-- 🔄 **Automatic backups** (`calorie_king_data_partial.csv` during collection)
-- ⚡ **Error recovery** (saves partial data if interrupted)
-- 📊 **Progress tracking** (shows collection status)
-- 🧹 **Data cleaning** (handles missing values and formatting)
-
-**Data Benefits:**
-- ✅ **Real food database** (500+ items from CalorieKing API)
-- ✅ **Diverse food types** (fruits, proteins, processed foods, beverages)
-- ✅ **Complete nutrition profiles** (20+ nutrients per item)
-- ✅ **Edge cases included** (missing values, extreme values for testing)
-- ✅ **Dynamic prompts** (evaluation tests generated from actual data)
-
-## 📊 Output & Scoring
-
-### Generated Reports
-- **../report/nutrition_evaluation_report.md**: Detailed markdown report with JSON comparisons
-- **Console output**: Real-time progress and summary statistics
-
-### Sample Report Structure
-```markdown
-# GPT Nutrition Evaluation Report
-
-**Model:** gpt-4o-mini
-**Date:** 2024-01-15 14:30:00
-**Total Prompts:** 4
-
-## Summary
-- Overall Average: 92.5%
-- Best Performance: 100.0%
-- Worst Performance: 75.0%
-
-### 1A: Factual Accuracy
-Score: 100.0%
-
-**Expected JSON:**
-```json
-{
-  "total_fat_g": 0.1,
-  "total_carbohydrates_g": 22.5,
-  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
-}
+### Method 2: WatsonX Quick Demo
+```bash
+python watsonx_demo.py
 ```
 
-**GPT Response:**
-```json
-{
-  "total_fat_g": 0.1,
-  "total_carbohydrates_g": 22.5,
-  "carb_calculation": {"net_carbs": 19.8, "fiber": 2.7, "total": 22.5}
-}
-```
+This uses the provided WatsonX credentials and runs a quick evaluation with the Granite model.
+
+### Method 3: OpenAI Quick Demo  
+```bash
+cd src
+python demo.py
 ```
 
-### 🎯 Scoring System
+## Usage Examples
 
-**Pure Accuracy Focus:**
-- ✅ **100%**: All JSON fields match expected values exactly
-- ✅ **Partial credit**: Proportional scoring for partially correct responses  
-- ✅ **0%**: Invalid JSON or major calculation errors
-- ✅ **Floating-point tolerance**: ±0.01 for numerical comparisons
+### 🔵 OpenAI Example
+```bash
+# Set your OpenAI API key
+export OPENAI_API_KEY="sk-..."
 
-**Per-Category Scoring:**
-- **1A (Factual)**: 3 points - fat value, carb value, calculation breakdown
-- **2A (Math)**: 4 points - individual calorie calculations + total
-- **3A (Health)**: 3 points - diabetes, hypertension, cholesterol evaluations  
-- **4A (Error)**: 3 points - error count + identification of critical issues
+# Run evaluation
+cd src
+python nutrition_evaluator.py
 
-**No style bias**: Only numerical accuracy and structural correctness matter!
+# Choose option 1 (OpenAI)
+# Select model: 1 (gpt-4o-mini - recommended for testing)
+```
 
-## Customization
+### 🟢 IBM WatsonX Example
+```bash
+# Set your WatsonX credentials
+export WATSONX_API_KEY="your_key"
+export WATSONX_URL="https://us-south.ml.cloud.ibm.com"  
+export WATSONX_PROJECT_ID="your_id"
 
-### Adding New Prompts
+# Run evaluation
+cd src
+python nutrition_evaluator.py
 
-Modify the `_initialize_prompts()` method in `NutritionEvaluator` class:
+# Choose option 2 (IBM WatsonX)
+# Select model: 1 (ibm/granite-3-8b-instruct - recommended for testing)
+```
 
+### 🐍 Programmatic Usage
 ```python
-{
-    "id": "5A",
-    "category": "New Category",
-    "difficulty": "Advanced",
-    "prompt": "Your prompt text with nutrition data...",
-    "expected_answer": "Expected response..."
-}
+from nutrition_evaluator import NutritionEvaluator, APIConfig, APIProvider
+
+# OpenAI Configuration
+openai_config = APIConfig(
+    provider=APIProvider.OPENAI,
+    openai_api_key="sk-..."
+)
+evaluator = NutritionEvaluator(api_config=openai_config, model_name="gpt-4o-mini")
+
+# WatsonX Configuration  
+watsonx_config = APIConfig(
+    provider=APIProvider.WATSONX,
+    watsonx_api_key="your-key",
+    watsonx_url="https://us-south.ml.cloud.ibm.com",
+    watsonx_project_id="your-project-id"
+)
+evaluator = NutritionEvaluator(api_config=watsonx_config, model_name="ibm/granite-3-8b-instruct")
+
+# Enable verbose logging to see actual API calls
+evaluator.enable_verbose_logging()
+
+# Run evaluation
+results = evaluator.run_evaluation()
 ```
 
-### Adjusting Scoring
+### 🔍 Verbose API Logging
 
-Modify the `_score_response()` method to change scoring criteria or weights.
+The evaluator includes **verbose logging** to show actual API calls and responses, proving the data comes from real APIs and isn't fabricated:
 
-### Testing Different Models
+#### Interactive Mode:
+```bash
+cd src
+python nutrition_evaluator.py
+# Choose: Enable verbose API logging? (y/N): y
+```
 
-The evaluator works with any OpenAI model:
-- **gpt-4o** / **gpt-4o-mini** (recommended)
-- **gpt-4** / **gpt-4-turbo**
-- **gpt-3.5-turbo**
+#### Programmatic Mode:
+```python
+# Enable during initialization
+evaluator = NutritionEvaluator(api_config=config, verbose=True)
+
+# Or enable later
+evaluator.enable_verbose_logging()
+```
+
+#### Sample Verbose Output:
+```
+================================================================================
+🔄 API CALL TO WATSONX
+Model: ibm/granite-3-8b-instruct
+================================================================================
+📤 PROMPT SENT:
+----------------------------------------
+Given the following nutrition data for Banana, raw, edible portion:
+{
+  "energy": 378.0,
+  "fat": 0.1,
+  "netCarbs": 19.8,
+  "protein": 1.7,
+  "sugar": 16.9,
+  "fiber": 2.7
+}
+
+Question: What is the total fat content and total carbohydrate content...
+----------------------------------------
+
+🟢 Making WatsonX API call...
+   API Key: xxx
+   URL: https://us-south.ml.cloud.ibm.com
+   Project ID: xxxx
+   Trying chat method first...
+
+📥 WATSONX CHAT RESPONSE RECEIVED:
+   Response structure: ['choices', 'usage', 'model']
+   Token usage: {'prompt_tokens': 245, 'completion_tokens': 67, 'total_tokens': 312}
+   Raw response type: <class 'dict'>
+   Execution Time: 2.34s
+----------------------------------------
+{
+  "total_fat_g": 0.1,
+  "total_carbohydrates_g": 22.5,
+  "carb_calculation": {
+    "net_carbs": 19.8,
+    "fiber": 2.7,
+    "total": 22.5
+  }
+}
+----------------------------------------
+```
+
+This verbose logging shows:
+- ✅ **Real API endpoints** and credentials being used
+- ✅ **Actual prompts** sent to the models  
+- ✅ **Raw responses** received from APIs
+- ✅ **Token usage** and timing information
+- ✅ **Model identification** and response metadata
+
+## 🎯 Evaluation Categories
+
+The system tests LLMs across four key areas:
+
+### 1. **Factual Accuracy** (Basic)
+Tests ability to extract specific nutritional values from provided data
+- Extract fat content and carbohydrate content  
+- Verify calculation of total carbohydrates (net carbs + fiber)
+- **Scoring**: Direct numerical comparison with 0.01g tolerance
+
+### 2. **Mathematical Computation** (Intermediate) 
+Tests nutritional calculations using the 4-4-9-7 calorie rule
+- Calculate calories from macronutrients (carbs: 4 cal/g, protein: 4 cal/g, fat: 9 cal/g, alcohol: 7 cal/g)
+- Compare calculated values with provided energy data
+- **Scoring**: Mathematical accuracy with 0.1 calorie tolerance
+
+### 3. **Health Recommendations** (Advanced)
+Tests ability to evaluate food suitability for health conditions
+- Assess suitability for Type 2 diabetes, high blood pressure, high cholesterol
+- Apply evidence-based nutritional guidelines
+- **Scoring**: Correct suitability rating (poor/fair/good) based on nutrient thresholds
+
+### 4. **Error Detection** (Expert)
+Tests ability to identify nutritional data inconsistencies  
+- Detect impossible values (negative nutrients, saturated fat > total fat)
+- Identify data integrity issues
+- **Scoring**: Correct identification of data errors
 
 ## 💰 API Costs
 
+### OpenAI Costs
 Approximate costs per evaluation (4 prompts, ~1000 tokens each):
 - **GPT-4o-mini**: ~$0.01-0.02 (recommended for testing)
 - **GPT-4o**: ~$0.05-0.10  
 - **GPT-4**: ~$0.15-0.25
 
-## Examples
+### IBM WatsonX Costs
+WatsonX pricing varies by model and usage. Check IBM pricing for current rates:
+- **Granite models**: Generally cost-effective for testing
+- **Llama models**: Higher quality, moderate cost
+- **Mistral models**: Balance of performance and cost
 
-### 🚀 Complete Workflow: Data Collection to Evaluation
+## Model Recommendations
 
-#### Step 1: Collect Data
-```bash
-$ cd src
-$ python calorie_king_scraper.py
-🔍 Connecting to CalorieKing API...
-📦 Found 523 food items
-📋 Fetching detailed nutrition data...
-[████████████████████] 100% (523/523)
-💾 Saved to ../data/calorie_king_data.csv
-✅ Data collection complete! 523 foods scraped
-```
+### 🔵 OpenAI Models
+- **Testing/Development**: `gpt-4o-mini` (fast, cost-effective)
+- **Production**: `gpt-4o` (best balance of speed/quality)
+- **Maximum Quality**: `gpt-4` (slower but highest accuracy)
 
-#### Step 2: Run Evaluation  
-```bash
-$ export OPENAI_API_KEY=...... # Your OpenAI API key
-$ python nutrition_evaluator.py
-Enter model name (default: gpt-4o-mini): 
-
-Evaluating gpt-4o-mini...
-✅ Loaded 523 food items from CSV
-🍌 Selected Banana for factual accuracy tests
-🥩 Selected Rump Steak for error detection  
-🍦 Selected Cookie Dough Ice Cream for health recommendations
-
-Starting evaluation of gpt-4o-mini
-Running prompt 1/4: 1A - Factual Accuracy
-Running prompt 2/4: 2A - Mathematical Computation  
-Running prompt 3/4: 3A - Health Recommendations
-Running prompt 4/4: 4A - Error Detection
-Evaluation completed
-
-🎉 Evaluation Complete!
-Average Score: 94.2%
-Best Performance: 100.0%
-Worst Performance: 75.0%
-Report saved to: ../report/nutrition_evaluation_report.md
-```
-
-### 🐍 Programmatic Usage
-```python
-# From src directory or add src to Python path
-import sys
-sys.path.append('src')
-from nutrition_evaluator import NutritionEvaluator
-import json
-
-# Initialize evaluator
-evaluator = NutritionEvaluator(api_key="your-key", model_name="gpt-4o-mini")
-
-# Run evaluation  
-results = evaluator.run_evaluation()
-
-# Access individual results
-for result in results:
-    print(f"Prompt {result.prompt_id}: {result.total_score:.1f}%")
-    if result.total_score < 90:
-        print(f"  Response: {result.gpt_response}")
-
-# Generate report
-report = evaluator.generate_report()
-print(report)
-```
+### 🟢 IBM WatsonX Models
+- **Testing/Development**: `ibm/granite-3-8b-instruct` (fast, cost-effective)
+- **Balanced Performance**: `ibm/granite-13b-instruct-v2` (larger granite model)
+- **High Quality**: `meta-llama/llama-3-3-70b-instruct` (excellent accuracy)
+- **Premium**: `meta-llama/llama-3-405b-instruct` (highest quality, slower)
+- **Alternative**: `mistralai/mistral-large` (good performance)
 
 ## Troubleshooting
 
@@ -363,6 +463,8 @@ print(report)
 1. **API Key Error**: Ensure your OpenAI API key is valid and has sufficient credits
 2. **Rate Limiting**: The program includes 1-second delays between requests  
 3. **Model Not Found**: Ensure you have access to the specified model
+   - For WatsonX, use only models from the supported list shown during configuration
+   - Run with verbose logging to see the exact error message
 4. **Missing CSV Data**: If `data/calorie_king_data.csv` doesn't exist, run the scraper first:
    ```bash
    cd src
@@ -370,6 +472,7 @@ print(report)
    ```
 5. **Scraper Access Issues**: Configure your CalorieKing API token in `config.py`
 6. **Small Dataset**: For testing without full scraper, create minimal CSV with 3-4 food items
+7. **WatsonX Model Access**: Some models require special access permissions - stick to the suggested models
 
 ### Error Handling
 
@@ -377,6 +480,7 @@ The evaluator includes comprehensive error handling:
 - API failures are logged with error messages
 - Invalid responses are handled gracefully
 - Execution continues even if individual prompts fail
+- Model availability is checked before initialization
 
 ## 🛠️ Contributing
 
