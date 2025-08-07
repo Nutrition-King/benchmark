@@ -31,7 +31,7 @@ class CalorieKingDirect:
             'fish': {'salmon', 'tuna', 'cod', 'halibut', 'mackerel', 'trout', 'bass', 'sardine', 'anchovy', 'flounder', 'sole', 'tilapia', 'mahi', 'snapper', 'grouper'},
             'meat': {'chicken', 'beef', 'pork', 'turkey', 'lamb', 'duck', 'ham', 'bacon', 'sausage', 'steak', 'ground beef', 'ground turkey'},
             'dairy': {'milk', 'cheese', 'yogurt', 'butter', 'cream', 'cottage cheese', 'mozzarella', 'cheddar', 'swiss'},
-            'vegetables': {'broccoli', 'spinach', 'carrot', 'tomato', 'lettuce', 'onion', 'pepper', 'corn', 'peas', 'beans'},
+            'vegetables': {'broccoli', 'spinach', 'carrot', 'tomato', 'lettuce', 'onion', 'pepper', 'corn', 'peas', 'beans', 'potato', 'sweet potato', 'cauliflower', 'cabbage', 'celery', 'cucumber', 'zucchini', 'squash', 'beet', 'radish'},
             'fruits': {'apple', 'banana', 'orange', 'grape', 'strawberry', 'blueberry', 'peach', 'pear', 'cherry'},
             'grains': {'rice', 'bread', 'pasta', 'oats', 'quinoa', 'barley', 'wheat', 'cereal'},
             'nuts': {'almond', 'walnut', 'peanut', 'cashew', 'pecan', 'pistachio'},
@@ -90,6 +90,35 @@ class CalorieKingDirect:
         
         return detailed_results
     
+    def _preprocess_query(self, query: str) -> str:
+        """Preprocess query to improve search success by simplifying complex descriptions."""
+        # Remove portion size patterns like "(3 oz)", "(1 cup)", etc.
+        query = re.sub(r'\([^)]*\b(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp)\b[^)]*\)', '', query)
+        
+        # Remove standalone measurements
+        query = re.sub(r'\b\d+\s*(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp)\b', '', query)
+        
+        # Handle multi-ingredient descriptions - extract the main ingredient
+        if 'mix of' in query.lower() or 'and' in query.lower():
+            # For "mix of broccoli, carrots, and bell peppers" -> focus on first ingredient
+            parts = re.split(r',\s*(?:mix of|and|or)\s*|,\s*', query)
+            if parts:
+                # Take the first substantial ingredient
+                for part in parts:
+                    part = part.strip()
+                    if len(part) > 3 and not any(skip in part.lower() for skip in ['mix', 'cup', 'of']):
+                        query = part
+                        break
+        
+        # Handle generic terms that might need to be more specific
+        if query.lower().strip() == 'roasted vegetables':
+            query = 'vegetables'
+        
+        # Clean up extra whitespace
+        query = re.sub(r'\s+', ' ', query).strip()
+        
+        return query
+
     def _extract_keywords(self, query: str) -> Dict[str, Set[str]]:
         """Extract meaningful keywords from the search query."""
         query_lower = query.lower()
@@ -121,7 +150,11 @@ class CalorieKingDirect:
     def _search_foods(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Search for foods by name using the CalorieKing API's search functionality."""
         try:
-            print(f"🔍 Searching CalorieKing database for '{query}'...")
+            # Preprocess query to improve search success
+            processed_query = self._preprocess_query(query)
+            if processed_query != query:
+                print(f"🔍 Simplified '{query}' → '{processed_query}'")
+            print(f"🔍 Searching CalorieKing database for '{processed_query}'...")
             
             # Use the API's built-in search functionality
             url = f"{self.base_url}/foods"
@@ -132,7 +165,7 @@ class CalorieKingDirect:
             api_limit = min(valid_limits, key=lambda x: abs(x - api_limit))
             
             params = {
-                'query': query,
+                'query': processed_query,
                 'region': 'us',  # Required region parameter
                 'limit': api_limit  # Use valid API limit
             }
@@ -153,7 +186,7 @@ class CalorieKingDirect:
             foods = search_response['foods']
             print(f"📋 API returned {len(foods)} search results")
             
-            # Extract keywords for relevance scoring
+            # Extract keywords for relevance scoring using original query
             query_keywords = self._extract_keywords(query)
             print(f"📝 Keywords: {query_keywords['main_keywords']}")
             print(f"🍽️  Food types: {query_keywords['food_types']}")
@@ -174,6 +207,7 @@ class CalorieKingDirect:
                     matches.append(food_with_score)
                     print(f"  📝 Match: {food.get('name', 'Unknown')} (score: {score:.3f})")
                     print(f"      💡 {score_breakdown}")
+
             
             # Sort by relevance score
             matches.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
@@ -261,15 +295,35 @@ class CalorieKingDirect:
 
         score += exact_match_score + specificity_bonus
         
-        # 4. Food category matching (only as fallback with lower score)
+        # 4. Food category matching (including when searching by category name)
         food_category_score = 0
-        if exact_match_score == 0:  # Only if no exact match found
+        
+        # Check if this food belongs to a category we're searching for
+        food_belongs_to_categories = set()
+        for category, foods in self.food_types.items():
+            if any(food in food_name_lower for food in foods):
+                food_belongs_to_categories.add(category)
+        
+        # If searching by category name (like "vegetables"), match foods in that category
+        if 'vegetables' in query_keywords['main_keywords'] and 'vegetables' in food_belongs_to_categories:
+            food_category_score = 0.8  # High score for category match
+            breakdown_parts.append(f"category_match:{food_category_score:.2f}")
+        elif query_keywords['food_types']:
+            # Normal category matching for foods with explicit type detection
+            for category in query_keywords['food_types']:
+                if category in food_belongs_to_categories:
+                    food_category_score = 0.6
+                    breakdown_parts.append(f"category_type:{food_category_score:.2f}")
+                    break
+        elif exact_match_score == 0:
+            # Fallback category matching
             for category in query_keywords['food_types']:
                 category_foods = self.food_types[category]
                 if any(food in food_name_lower for food in category_foods):
-                    food_category_score = 0.4  # Slightly higher than before
+                    food_category_score = 0.4
                     breakdown_parts.append(f"category_fallback:{food_category_score:.2f}")
                     break
+        
         score += food_category_score
         
         # 5. Cooking method matches
@@ -285,21 +339,33 @@ class CalorieKingDirect:
         penalty = 0
         
         # Strong penalty for wrong food type
-        if query_keywords['food_types'].intersection({'fish', 'meat', 'vegetables', 'grains'}):
+        if query_keywords['food_types']:
             # If searching for a specific food type, penalize results from very different types
             wrong_categories = set()
             if 'vegetables' in query_keywords['food_types']:
-                wrong_categories.update(['beverages', 'desserts', 'meat', 'fish'])
+                wrong_categories.update(['beverages', 'desserts', 'meat', 'fish', 'dairy'])
             elif 'grains' in query_keywords['food_types']:
                 wrong_categories.update(['beverages', 'desserts', 'meat', 'fish', 'dairy'])
-            elif query_keywords['food_types'].intersection({'fish', 'meat'}):
-                wrong_categories.update(['beverages', 'desserts', 'vegetables', 'fruits'])
+            elif 'fish' in query_keywords['food_types']:
+                wrong_categories.update(['beverages', 'desserts', 'vegetables', 'fruits', 'grains', 'meat'])
+            elif 'meat' in query_keywords['food_types']:
+                wrong_categories.update(['beverages', 'desserts', 'vegetables', 'fruits', 'grains', 'fish'])
+            elif 'dairy' in query_keywords['food_types']:
+                wrong_categories.update(['beverages', 'desserts', 'meat', 'fish', 'vegetables'])
                 
             for wrong_cat in wrong_categories:
                 if any(item in food_name_lower for item in self.food_types[wrong_cat]):
-                    penalty = 1.0
+                    penalty = 1.5  # Stronger penalty
                     breakdown_parts.append(f"penalty_wrong_category:-{penalty:.2f}")
                     break
+                    
+        # Extra penalty for dishes with multiple components when searching for single ingredient
+        if len(query_keywords['main_keywords']) <= 2:
+            # If searching for simple terms like "vegetables" or "salmon"
+            complex_indicators = ['plus', 'sides', 'prepared', 'chicken', 'harvest']
+            if any(indicator in food_name_lower for indicator in complex_indicators):
+                penalty = max(penalty, 1.0)
+                breakdown_parts.append(f"penalty_complex:-1.00")
         
         # Penalty for alcohol when not searching for it
         if any(alcohol_word in food_name_lower for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
@@ -424,10 +490,15 @@ class CalorieKingDirect:
             
             # Get serving scale factor
             serving_scale = 1.0
+            quantity = 'Per 100g'
             if 'defaultServing' in best_match:
-                serving_scale = best_match['defaultServing'].get('scale', 1.0)
+                serving = best_match['defaultServing']
+                serving_scale = serving.get('scale', 1.0)
+                quantity = serving.get('name', quantity)
             elif 'servings' in best_match and best_match['servings']:
-                serving_scale = best_match['servings'][0].get('scale', 1.0)
+                serving = best_match['servings'][0]
+                serving_scale = serving.get('scale', 1.0)
+                quantity = serving.get('name', quantity)
             
             # Apply scaling to get actual serving nutrition
             carbs = base_carbs * serving_scale
@@ -443,6 +514,7 @@ class CalorieKingDirect:
                 "energy": energy,
                 "confidence": best_match.get('relevance_score', 0),
                 "brand": best_match.get('brandName', ''),
+                "quantity": quantity,
             }
         
         return {}
@@ -466,8 +538,9 @@ class CalorieKingDirect:
             df = pd.read_csv(input_csv)
             
             if item_column not in df.columns:
-                print(f"❌ Column '{item_column}' not found. Available: {list(df.columns)}")
-                return False
+                # Fallback to the first column if specified one is missing
+                item_column = df.columns[0]
+                print(f"ℹ️ Using first column '{item_column}' for items")
             
             # Get unique food items
             unique_items = df[item_column].dropna().unique()
@@ -480,35 +553,29 @@ class CalorieKingDirect:
                 
                 best_match = self.get_best_match(food_item)
                 
-                if best_match and best_match['carbs'] > 0:
+                if best_match and best_match.get('food_name'):
                     nutrition_cache[food_item] = {
                         'ck_name': best_match['food_name'],
-                        'ck_brand': best_match['brand'],
                         'ck_carbs': best_match['carbs'],
-                        'ck_protein': best_match['protein'],
-                        'ck_fat': best_match['fat'],
-                        'ck_energy': best_match['energy'],
-                        'ck_confidence': best_match['confidence']
+                        'ck_quantity': best_match.get('quantity', ''),
                     }
-                    print(f"  ✅ Found: {best_match['food_name']} - {best_match['carbs']}g carbs")
+                    print(f"  ✅ Found: {best_match['food_name']} - {best_match['carbs']:.1f}g carbs")
                 else:
-                    nutrition_cache[food_item] = {
-                        'ck_name': '', 'ck_brand': '', 'ck_carbs': 0,
-                        'ck_protein': 0, 'ck_fat': 0, 'ck_energy': 0, 'ck_confidence': 0
-                    }
+                    nutrition_cache[food_item] = {'ck_name': '', 'ck_carbs': 0, 'ck_quantity': ''}
                     print(f"  ❌ No results found")
                 
                 time.sleep(0.3)  # Rate limiting
             
             # Add nutrition data to dataframe
-            for col in ['ck_name', 'ck_brand', 'ck_carbs', 'ck_protein', 'ck_fat', 'ck_energy', 'ck_confidence']:
+            for col in ['ck_name', 'ck_carbs', 'ck_quantity']:
                 df[col] = df[item_column].map(lambda x: nutrition_cache.get(x, {}).get(col, ''))
             
-            # Save enhanced CSV
+            # Save CSV with only requested columns
             os.makedirs(os.path.dirname(output_csv) if os.path.dirname(output_csv) else '.', exist_ok=True)
-            df.to_csv(output_csv, index=False)
+            df_out = df[['ck_name', 'ck_carbs', 'ck_quantity']]
+            df_out.to_csv(output_csv, index=False)
             
-            successful_matches = len([k for k, v in nutrition_cache.items() if v['ck_carbs'] > 0])
+            successful_matches = len([k for k, v in nutrition_cache.items() if v['ck_name']])
             print(f"\n✅ Enhanced CSV saved to: {output_csv}")
             print(f"📊 Successfully matched: {successful_matches}/{len(unique_items)} items")
             
