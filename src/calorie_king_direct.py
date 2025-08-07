@@ -12,6 +12,10 @@ import os
 import sys
 import re
 from typing import Dict, List, Optional, Any, Set
+from dotenv import load_dotenv
+
+# Load environment variables from a local .env file if present
+load_dotenv()
 
 class CalorieKingDirect:
     """Complete CalorieKing direct querying system."""
@@ -42,7 +46,13 @@ class CalorieKingDirect:
         self.cooking_methods = {'baked', 'grilled', 'fried', 'roasted', 'steamed', 'boiled', 'raw', 'broiled', 'sauteed', 'smoked'}
         
         # Measurement words to ignore in matching
-        self.measurement_words = {'oz', 'ounce', 'ounces', 'lb', 'pound', 'pounds', 'cup', 'cups', 'tbsp', 'tsp', 'gram', 'grams', 'kg', 'serving', 'piece', 'slice', 'medium', 'large', 'small', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'}
+        self.measurement_words = {
+            'oz', 'ounce', 'ounces', 'lb', 'pound', 'pounds',
+            'cup', 'cups', 'tbsp', 'tsp', 'gram', 'grams', 'kg',
+            'serving', 'piece', 'slice', 'medium', 'large', 'small',
+            'patty', 'bun', 'buns',
+            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+        }
     
     def query_food(self, food_name: str, max_results: int = 1) -> List[Dict[str, Any]]:
         """
@@ -93,10 +103,10 @@ class CalorieKingDirect:
     def _preprocess_query(self, query: str) -> str:
         """Preprocess query to improve search success by simplifying complex descriptions."""
         # Remove portion size patterns like "(3 oz)", "(1 cup)", etc.
-        query = re.sub(r'\([^)]*\b(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp)\b[^)]*\)', '', query)
+        query = re.sub(r'\([^)]*\b(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp|patty|bun|buns)\b[^)]*\)', '', query)
         
         # Remove standalone measurements
-        query = re.sub(r'\b\d+\s*(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp)\b', '', query)
+        query = re.sub(r'\b\d+\s*(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp|patty|bun|buns)\b', '', query)
         
         # Handle multi-ingredient descriptions - extract the main ingredient
         if 'mix of' in query.lower() or 'and' in query.lower():
@@ -113,11 +123,24 @@ class CalorieKingDirect:
         # Handle generic terms that might need to be more specific
         if query.lower().strip() == 'roasted vegetables':
             query = 'vegetables'
+
+        # Apply simple synonyms to match CalorieKing vocabulary better
+        query = self._apply_synonyms(query)
         
         # Clean up extra whitespace
         query = re.sub(r'\s+', ' ', query).strip()
         
         return query
+
+    def _apply_synonyms(self, text: str) -> str:
+        """Apply a small set of synonyms to better match CalorieKing naming."""
+        synonyms_map = {
+            'burger bun': 'hamburger bun',
+        }
+        lowered = text.lower()
+        for src, dst in synonyms_map.items():
+            lowered = re.sub(rf'\b{re.escape(src)}\b', dst, lowered, flags=re.IGNORECASE)
+        return lowered
 
     def _extract_keywords(self, query: str) -> Dict[str, Set[str]]:
         """Extract meaningful keywords from the search query."""
@@ -154,36 +177,44 @@ class CalorieKingDirect:
             processed_query = self._preprocess_query(query)
             if processed_query != query:
                 print(f"🔍 Simplified '{query}' → '{processed_query}'")
-            print(f"🔍 Searching CalorieKing database for '{processed_query}'...")
+            # Build fallback query variants
+            fallback_queries = self._generate_fallback_queries(processed_query)
             
-            # Use the API's built-in search functionality
-            url = f"{self.base_url}/foods"
+            foods: List[Dict[str, Any]] = []
+            last_error: Optional[Exception] = None
+            for attempt_query in fallback_queries:
+                print(f"🔍 Searching CalorieKing database for '{attempt_query}'...")
+                url = f"{self.base_url}/foods"
+                # API only accepts specific limit values: [1, 5, 10, 20, 30, 50, 100, 1000]
+                api_limit = min(limit * 3, 100)
+                valid_limits = [1, 5, 10, 20, 30, 50, 100, 1000]
+                api_limit = min(valid_limits, key=lambda x: abs(x - api_limit))
+                params = {
+                    'query': attempt_query,
+                    'region': 'us',
+                    'limit': api_limit
+                }
+                try:
+                    response = requests.get(
+                        url,
+                        auth=(self.access_token, ''),
+                        headers=self.headers,
+                        params=params
+                    )
+                    response.raise_for_status()
+                    search_response = response.json()
+                    foods = search_response.get('foods', []) if search_response else []
+                    if foods:
+                        break
+                except Exception as e:
+                    last_error = e
+                    continue
             
-            # API only accepts specific limit values: [1, 5, 10, 20, 30, 50, 100, 1000]
-            api_limit = min(limit * 3, 100)
-            valid_limits = [1, 5, 10, 20, 30, 50, 100, 1000]
-            api_limit = min(valid_limits, key=lambda x: abs(x - api_limit))
-            
-            params = {
-                'query': processed_query,
-                'region': 'us',  # Required region parameter
-                'limit': api_limit  # Use valid API limit
-            }
-            
-            response = requests.get(
-                url,
-                auth=(self.access_token, ''),
-                headers=self.headers,
-                params=params
-            )
-            response.raise_for_status()
-            search_response = response.json()
-            
-            if not search_response or 'foods' not in search_response:
+            if not foods:
+                if last_error:
+                    print(f"Error searching for '{processed_query}': {str(last_error)}")
                 print("❌ No search results returned from API")
                 return []
-            
-            foods = search_response['foods']
             print(f"📋 API returned {len(foods)} search results")
             
             # Extract keywords for relevance scoring using original query
@@ -218,6 +249,53 @@ class CalorieKingDirect:
         except Exception as e:
             print(f"Error searching for '{query}': {str(e)}")
             return []
+
+    def _generate_fallback_queries(self, processed_query: str) -> List[str]:
+        """Generate a list of fallback queries from most to least specific."""
+        variants: List[str] = []
+        s = processed_query.strip()
+        if not s:
+            return [processed_query]
+        
+        variants.append(s)
+        # Remove trailing "with ..."
+        without_with = re.sub(r"\bwith\b.*$", "", s).strip()
+        if without_with and without_with not in variants:
+            variants.append(without_with)
+        
+        # Remove leading prep terms like "slow cooker", "instant pot"
+        prep_patterns = [
+            r"^slow cooker\s+", r"^slow-cooker\s+", r"^slow\s+", r"^crockpot\s+", r"^instant pot\s+",
+        ]
+        t = s
+        for pat in prep_patterns:
+            t = re.sub(pat, "", t, flags=re.IGNORECASE).strip()
+        if t and t not in variants:
+            variants.append(t)
+        if without_with:
+            t2 = without_with
+            for pat in prep_patterns:
+                t2 = re.sub(pat, "", t2, flags=re.IGNORECASE).strip()
+            if t2 and t2 not in variants:
+                variants.append(t2)
+        
+        # Fallback to first 1-2 words
+        words = s.split()
+        if len(words) >= 2:
+            first_two = " ".join(words[:2])
+            if first_two not in variants:
+                variants.append(first_two)
+        if len(words) >= 1 and words[0] not in variants:
+            variants.append(words[0])
+        
+        # Deduplicate while preserving order
+        seen = set()
+        ordered = []
+        for v in variants:
+            if v and v.lower() not in seen:
+                ordered.append(v)
+                seen.add(v.lower())
+        return ordered
     
     def _get_food_details(self, revision_id: str) -> Optional[Dict[str, Any]]:
         """Get detailed nutrition information for a specific food."""
@@ -367,6 +445,16 @@ class CalorieKingDirect:
                 penalty = max(penalty, 1.0)
                 breakdown_parts.append(f"penalty_complex:-1.00")
         
+        # Context-aware penalties/boosts for burger vs sandwich
+        query_words = query_keywords['all_words']
+        if any(w in query_words for w in {'burger', 'patty'}):
+            if 'sandwich' in food_name_lower or 'wrap' in food_name_lower:
+                penalty = max(penalty, 0.8)
+                breakdown_parts.append("penalty_non_burger:-0.80")
+            if 'burger' in food_name_lower or 'patty' in food_name_lower:
+                score += 0.6
+                breakdown_parts.append("boost_burger:0.60")
+
         # Penalty for alcohol when not searching for it
         if any(alcohol_word in food_name_lower for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
             if not any(alcohol_word in query_keywords['all_words'] for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
@@ -467,8 +555,96 @@ class CalorieKingDirect:
             if base_fiber > 0:
                 print(f"🌾 Fiber: {base_fiber:.1f}g")
     
-    def get_best_match(self, food_name: str) -> Dict[str, Any]:
-        """Get the best matching nutrition information for a food."""
+    def _parse_requested_serving(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse serving size from free-text, e.g., '3 oz', '1 cup', 'medium serving'."""
+        s = text.lower()
+        # Prefer explicit masses
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(oz|ounce|ounces)\b", s)
+        if m:
+            ounces = float(m.group(1))
+            grams = ounces * 28.3495
+            return {"type": "mass", "grams": grams, "label": f"{ounces:g} oz"}
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(g|gram|grams)\b", s)
+        if m:
+            grams = float(m.group(1))
+            return {"type": "mass", "grams": grams, "label": f"{grams:g} g"}
+
+        # Volumes
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(cup|cups)\b", s)
+        if m:
+            amount = float(m.group(1))
+            return {"type": "volume", "unit": "cup", "amount": amount, "label": f"{amount:g} cup" + ("s" if amount != 1 else "")}
+
+        # Generic units
+        for unit in ["slice", "piece", "serving", "patty", "bun", "buns"]:
+            m = re.search(rf"(\d+(?:\.\d+)?)\s*{unit}\b", s)
+            if m:
+                amount = float(m.group(1))
+                return {"type": "keyword", "keyword": unit, "amount": amount, "label": f"{amount:g} {unit}"}
+
+        # Size adjectives
+        for size_word in ["small", "medium", "large"]:
+            if re.search(rf"\b{size_word}\b", s):
+                return {"type": "keyword", "keyword": size_word, "amount": 1.0, "label": size_word}
+
+        return None
+
+    def _choose_serving_scale(self, food: Dict[str, Any], requested: Optional[Dict[str, Any]]) -> tuple[float, str]:
+        """Choose serving scale and label based on requested serving and available servings."""
+        base_mass = food.get('mass', 100) or 100
+        servings = food.get('servings', []) or []
+        default_serving = food.get('defaultServing')
+
+        # Default
+        scale = 1.0
+        label = 'Per 100g'
+        if default_serving:
+            scale = float(default_serving.get('scale', 1.0) or 1.0)
+            label = default_serving.get('name', 'serving')
+
+        if not requested:
+            return scale, label
+
+        # Mass-based request
+        if requested['type'] == 'mass':
+            grams = float(requested['grams'])
+            return grams / base_mass, requested.get('label', f"{grams:g} g")
+
+        # Volume-based request: attempt to find a matching serving name
+        if requested['type'] == 'volume' and requested['unit'] == 'cup':
+            # Prefer servings that contain 'cup'
+            cup_servings = [s for s in servings if 'name' in s and 'cup' in s['name'].lower()]
+            if cup_servings:
+                cup_scale = float(cup_servings[0].get('scale', 1.0) or 1.0)
+                amount = float(requested.get('amount', 1.0) or 1.0)
+                return cup_scale * amount, requested.get('label', 'cup')
+            # Fallback: use default scale as one cup if no explicit cup serving
+            amount = float(requested.get('amount', 1.0) or 1.0)
+            return scale * amount, requested.get('label', 'cup')
+
+        # Keyword-based request: try to match serving names
+        if requested['type'] == 'keyword':
+            keyword = requested['keyword']
+            amount = float(requested.get('amount', 1.0) or 1.0)
+            candidates = [s for s in servings if 'name' in s and keyword in s['name'].lower()]
+            if candidates:
+                k_scale = float(candidates[0].get('scale', 1.0) or 1.0)
+                return k_scale * amount, requested.get('label', keyword)
+            # Special-case: generic 'serving' maps to default
+            if keyword == 'serving' and default_serving:
+                d_scale = float(default_serving.get('scale', 1.0) or 1.0)
+                return d_scale * amount, requested.get('label', 'serving')
+            # Size words
+            size_candidates = [s for s in servings if 'name' in s and keyword in s['name'].lower()]
+            if size_candidates:
+                s_scale = float(size_candidates[0].get('scale', 1.0) or 1.0)
+                return s_scale * amount, requested.get('label', keyword)
+
+        # Fallback to default
+        return scale, label
+
+    def get_best_match(self, food_name: str, requested_serving: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Get the best matching nutrition information for a food, with optional serving override."""
         results = self.query_food(food_name, max_results=1)
         
         if results:
@@ -488,17 +664,8 @@ class CalorieKingDirect:
                 base_fat = nutrients.get('fat', 0)
                 base_energy = nutrients.get('energy', 0)
             
-            # Get serving scale factor
-            serving_scale = 1.0
-            quantity = 'Per 100g'
-            if 'defaultServing' in best_match:
-                serving = best_match['defaultServing']
-                serving_scale = serving.get('scale', 1.0)
-                quantity = serving.get('name', quantity)
-            elif 'servings' in best_match and best_match['servings']:
-                serving = best_match['servings'][0]
-                serving_scale = serving.get('scale', 1.0)
-                quantity = serving.get('name', quantity)
+            # Choose serving scale based on requested serving
+            serving_scale, quantity = self._choose_serving_scale(best_match, requested_serving)
             
             # Apply scaling to get actual serving nutrition
             carbs = base_carbs * serving_scale
@@ -550,8 +717,24 @@ class CalorieKingDirect:
             nutrition_cache = {}
             for i, food_item in enumerate(unique_items, 1):
                 print(f"\n[{i}/{len(unique_items)}] Querying: {food_item}")
+                # Parse requested serving from the text
+                requested_serving = self._parse_requested_serving(str(food_item))
                 
-                best_match = self.get_best_match(food_item)
+                # Try normal lookup first
+                best_match = self.get_best_match(food_item, requested_serving=requested_serving)
+                
+                # If still not found and phrase has "with", attempt composite calculation
+                if (not best_match or not best_match.get('food_name')) and ' with ' in str(food_item).lower():
+                    composite = self._composite_nutrition_from_phrase(str(food_item), requested_serving)
+                    if composite:
+                        nutrition_cache[food_item] = {
+                            'ck_name': composite['food_name'],
+                            'ck_carbs': composite['carbs'],
+                            'ck_quantity': composite.get('quantity', '')
+                        }
+                        print(f"  ✅ Composed: {composite['food_name']} - {composite['carbs']:.1f}g carbs")
+                        time.sleep(0.3)
+                        continue
                 
                 if best_match and best_match.get('food_name'):
                     nutrition_cache[food_item] = {
@@ -584,6 +767,32 @@ class CalorieKingDirect:
         except Exception as e:
             print(f"❌ Error processing CSV: {str(e)}")
             return False
+
+    def _composite_nutrition_from_phrase(self, text: str, requested_serving: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Compose nutrition by summing major components (e.g., 'chili with quinoa')."""
+        s = text.lower()
+        if ' with ' not in s:
+            return None
+        base_part, tail = s.split(' with ', 1)
+        # Extract first component noun from tail (before comma/parenthesis)
+        tail_clean = re.split(r'[,(]', tail)[0].strip()
+        if not tail_clean:
+            return None
+
+        # Look up base and component
+        base = self.get_best_match(base_part, requested_serving=requested_serving)
+        component = self.get_best_match(tail_clean, requested_serving=None)
+        if not base or not base.get('food_name') or not component or not component.get('food_name'):
+            return None
+        
+        # Sum carbs; keep quantity from base
+        carbs = float(base.get('carbs') or 0) + float(component.get('carbs') or 0)
+        name = f"{base['food_name']} + {component['food_name']}"
+        return {
+            'food_name': name,
+            'carbs': carbs,
+            'quantity': base.get('quantity', '')
+        }
     
     def interactive_lookup(self):
         """Interactive command-line interface for food lookup."""
