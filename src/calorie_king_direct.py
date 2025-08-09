@@ -121,8 +121,7 @@ class CalorieKingDirect:
                         break
         
         # Handle generic terms that might need to be more specific
-        if query.lower().strip() == 'roasted vegetables':
-            query = 'vegetables'
+        # Removed special-casing that collapsed 'roasted vegetables' to 'vegetables'
 
         # Apply simple synonyms to match CalorieKing vocabulary better
         query = self._apply_synonyms(query)
@@ -180,7 +179,9 @@ class CalorieKingDirect:
             # Build fallback query variants
             fallback_queries = self._generate_fallback_queries(processed_query)
             
+            # Aggregate foods from all variants instead of stopping at the first
             foods: List[Dict[str, Any]] = []
+            seen_ids: Set[str] = set()
             last_error: Optional[Exception] = None
             for attempt_query in fallback_queries:
                 print(f"🔍 Searching CalorieKing database for '{attempt_query}'...")
@@ -203,9 +204,12 @@ class CalorieKingDirect:
                     )
                     response.raise_for_status()
                     search_response = response.json()
-                    foods = search_response.get('foods', []) if search_response else []
-                    if foods:
-                        break
+                    new_foods = search_response.get('foods', []) if search_response else []
+                    for f in new_foods:
+                        rev = f.get('revisionId')
+                        if rev and rev not in seen_ids:
+                            foods.append(f)
+                            seen_ids.add(rev)
                 except Exception as e:
                     last_error = e
                     continue
@@ -215,7 +219,7 @@ class CalorieKingDirect:
                     print(f"Error searching for '{processed_query}': {str(last_error)}")
                 print("❌ No search results returned from API")
                 return []
-            print(f"📋 API returned {len(foods)} search results")
+            print(f"📋 API returned {len(foods)} aggregated search results")
             
             # Extract keywords for relevance scoring using original query
             query_keywords = self._extract_keywords(query)
@@ -223,25 +227,39 @@ class CalorieKingDirect:
             print(f"🍽️  Food types: {query_keywords['food_types']}")
             print(f"👨‍🍳 Cooking methods: {query_keywords['cooking_methods']}")
             
-            # Score and filter the results
-            matches = []
+            # Score and collect all results
+            scored: List[Dict[str, Any]] = []
             for food in foods:
                 food_name = food.get('name', '').lower()
-                
-                # Calculate relevance score
                 score, score_breakdown = self._calculate_relevance_detailed(query_keywords, food_name, food)
-                
-                if score > 0.3:  # Lower threshold since API already filtered relevant results
-                    food_with_score = food.copy()
-                    food_with_score['relevance_score'] = score
-                    food_with_score['score_breakdown'] = score_breakdown
-                    matches.append(food_with_score)
-                    print(f"  📝 Match: {food.get('name', 'Unknown')} (score: {score:.3f})")
-                    print(f"      💡 {score_breakdown}")
+                food_with_score = food.copy()
+                food_with_score['relevance_score'] = score
+                food_with_score['score_breakdown'] = score_breakdown
+                scored.append(food_with_score)
 
-            
-            # Sort by relevance score
-            matches.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            # Prefer stricter threshold first, then relax if empty
+            def filter_and_log(threshold: float) -> List[Dict[str, Any]]:
+                filtered = [f for f in scored if f.get('relevance_score', 0) > threshold]
+                filtered.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+                for f in filtered[:limit]:
+                    print(f"  📝 Match: {f.get('name', 'Unknown')} (score: {f.get('relevance_score', 0):.3f})")
+                    print(f"      💡 {f.get('score_breakdown', '')}")
+                return filtered
+
+            matches = filter_and_log(0.5)
+            if not matches:
+                matches = filter_and_log(0.3)
+            # Final fallback: pick top scored item if still empty
+            if not matches and scored:
+                # Prefer items containing any main keyword
+                main_words = query_keywords.get('main_keywords', set())
+                contains_keyword = [f for f in scored if any(w in f.get('name', '').lower() for w in main_words)]
+                candidates = contains_keyword or scored
+                candidates.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+                top = candidates[:limit]
+                for f in top:
+                    print(f"  📝 Fallback: {f.get('name', 'Unknown')} (score: {f.get('relevance_score', 0):.3f})")
+                matches = top
             print(f"📊 Found {len(matches)} relevant matches")
             
             return matches[:limit]
@@ -263,9 +281,11 @@ class CalorieKingDirect:
         if without_with and without_with not in variants:
             variants.append(without_with)
         
-        # Remove leading prep terms like "slow cooker", "instant pot"
+        # Remove leading prep/cooking terms like "slow cooker", "instant pot", "baked", "grilled", etc.
         prep_patterns = [
             r"^slow cooker\s+", r"^slow-cooker\s+", r"^slow\s+", r"^crockpot\s+", r"^instant pot\s+",
+            r"^baked\s+", r"^grilled\s+", r"^fried\s+", r"^roasted\s+", r"^steamed\s+", r"^boiled\s+",
+            r"^raw\s+", r"^broiled\s+", r"^sauteed\s+", r"^smoked\s+",
         ]
         t = s
         for pat in prep_patterns:
@@ -287,6 +307,22 @@ class CalorieKingDirect:
                 variants.append(first_two)
         if len(words) >= 1 and words[0] not in variants:
             variants.append(words[0])
+
+        # Last-word variant (e.g., 'salmon' from 'baked salmon')
+        if words:
+            last_word = words[-1]
+            if last_word and last_word not in variants:
+                variants.append(last_word)
+
+        # Targeted variants for common CK naming
+        if re.search(r"\broasted vegetables\b", s, flags=re.IGNORECASE):
+            v = re.sub(r"\broasted\b", "roast", s, flags=re.IGNORECASE)
+            if v and v not in variants:
+                variants.append(v)
+        if re.search(r"\bvegetables\b", s, flags=re.IGNORECASE) and not re.search(r"\b(mix|mixed|medley)\b", s, flags=re.IGNORECASE):
+            v2 = re.sub(r"\bvegetables\b", "mixed vegetables", s, flags=re.IGNORECASE)
+            if v2 and v2 not in variants:
+                variants.append(v2)
         
         # Deduplicate while preserving order
         seen = set()
@@ -447,6 +483,13 @@ class CalorieKingDirect:
         
         # Context-aware penalties/boosts for burger vs sandwich
         query_words = query_keywords['all_words']
+        # Hard requirement: if query contains burger/patty, candidate must reflect burger/patty
+        if any(w in query_words for w in {'burger', 'patty'}) and not any(
+            k in food_name_lower for k in {'burger', 'patty', 'hamburger'}
+        ):
+            breakdown_parts.append("hard_fail_missing_burger")
+            return 0.0, (" | ".join(breakdown_parts) if breakdown_parts else "hard_fail_missing_burger")
+
         if any(w in query_words for w in {'burger', 'patty'}):
             if 'sandwich' in food_name_lower or 'wrap' in food_name_lower:
                 penalty = max(penalty, 0.8)
@@ -455,11 +498,32 @@ class CalorieKingDirect:
                 score += 0.6
                 breakdown_parts.append("boost_burger:0.60")
 
+        # Respect plural/general dish terms for vegetables and fries
+        if 'vegetables' in query_keywords['all_words']:
+            if not any(k in food_name_lower for k in ['vegetables', 'mixed', 'mix', 'medley']):
+                penalty = max(penalty, 0.8)
+                breakdown_parts.append("penalty_not_plural_mix:-0.80")
+
+        if 'fries' in query_keywords['all_words']:
+            if 'fries' not in food_name_lower:
+                penalty = max(penalty, 1.2)
+                breakdown_parts.append("penalty_missing_fries:-1.20")
+
         # Penalty for alcohol when not searching for it
         if any(alcohol_word in food_name_lower for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
             if not any(alcohol_word in query_keywords['all_words'] for alcohol_word in ['beer', 'wine', 'alcohol', 'liquor']):
                 penalty = max(penalty, 0.9)
                 breakdown_parts.append(f"penalty_alcohol:-0.90")
+
+        # Hard negatives for packets/mixes/etc unless explicitly requested
+        hard_negative_terms = ['seasoning', 'mix', 'packet', 'dry', 'powder',
+                               'base', 'bouillon', 'condensed', 'dressing', 'gravy', 'sauce']
+        if any(t in food_name_lower for t in hard_negative_terms) and not any(
+            t in query_keywords['all_words'] for t in hard_negative_terms
+        ):
+            # Make it a strong penalty rather than absolute block to still allow true dishes like 'Chili, large'
+            penalty = max(penalty, 2.0)
+            breakdown_parts.append("penalty_hard_negatives:-2.00")
         
         score = max(0, score - penalty)
         
@@ -558,6 +622,20 @@ class CalorieKingDirect:
     def _parse_requested_serving(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse serving size from free-text, e.g., '3 oz', '1 cup', 'medium serving'."""
         s = text.lower()
+        # Fractions like 1/2, 3/4
+        m = re.search(r"(\d+)\s*/\s*(\d+)\s*(cup|cups|oz|ounce|ounces|g|gram|grams)\b", s)
+        if m:
+            num, den = float(m.group(1)), float(m.group(2))
+            amount = num / den
+            unit = m.group(3)
+            if unit in ('oz', 'ounce', 'ounces'):
+                grams = amount * 28.3495
+                return {"type": "mass", "grams": grams, "label": f"{amount:g} oz"}
+            if unit in ('g', 'gram', 'grams'):
+                grams = amount
+                return {"type": "mass", "grams": grams, "label": f"{grams:g} g"}
+            if unit in ('cup', 'cups'):
+                return {"type": "volume", "unit": "cup", "amount": amount, "label": f"{amount:g} cup" + ("s" if amount != 1 else "")}
         # Prefer explicit masses
         m = re.search(r"(\d+(?:\.\d+)?)\s*(oz|ounce|ounces)\b", s)
         if m:
