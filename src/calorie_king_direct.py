@@ -5,14 +5,21 @@ Single file solution for querying CalorieKing API directly for nutrition informa
 """
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import csv
 import pandas as pd
 import os
 import sys
 import re
+import numpy as np
 from typing import Dict, List, Optional, Any, Set
 from dotenv import load_dotenv
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None  # Defer hard failure until first use
 
 # Load environment variables from a local .env file if present
 load_dotenv()
@@ -24,6 +31,21 @@ class CalorieKingDirect:
         """Initialize with CalorieKing API configuration."""
         self.base_url = "https://foodapi.calorieking.com/v1"
         self.headers = {'Accept': 'application/json'}
+        self.embed_model: Optional[SentenceTransformer] = None
+        self.embed_model_name: str = 'sentence-transformers/paraphrase-MiniLM-L3-v2'
+        
+        # Configure a requests session with retry/backoff to handle 429 and transient errors
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=0.6,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         
         # Read access token from environment variable
         self.access_token = os.getenv('CALORIEKING_ACCESS_TOKEN')
@@ -51,9 +73,80 @@ class CalorieKingDirect:
             'cup', 'cups', 'tbsp', 'tsp', 'gram', 'grams', 'kg',
             'serving', 'piece', 'slice', 'medium', 'large', 'small',
             'patty', 'bun', 'buns',
-            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+            'pcs', 'bag', 'glass', 'bowl', 'bottle', 'can', 'pack'
+        }
+        # Common stop words that should not drive the query
+        self.stop_words = {'of', 'and', 'the', 'a', 'an', 'to', 'for', 'with', 'in', 'on',
+                           'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'}
+        
+        # Known brand phrases for boosting/variant generation
+        self.brand_phrases = {
+            'fiber one', 'magic spoon', 'dunkin', 'dunkin donuts', 'goya',
+            'goldfish', 'oreo', 'cheetos', 'doritos', 'kellogg', 'cheerios',
+            'pepsi', 'coca cola', 'coke', 'starbucks'
         }
     
+    def _ensure_embedder(self) -> None:
+        """Lazily initialize the sentence-transformers model for semantic search."""
+        if self.embed_model is not None:
+            return
+        if SentenceTransformer is None:
+            raise RuntimeError(
+                "sentence-transformers is not installed. Please install it with 'pip install sentence-transformers'."
+            )
+        # Load model once and reuse
+        self.embed_model = SentenceTransformer(self.embed_model_name)
+
+    def _encode_and_normalize(self, texts: List[str]) -> np.ndarray:
+        """Encode texts to embeddings and L2-normalize them for cosine similarity."""
+        self._ensure_embedder()
+        embeddings = self.embed_model.encode(texts, show_progress_bar=False)
+        embeddings = np.asarray(embeddings, dtype=np.float32)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-9
+        return embeddings / norms
+
+    def _build_candidate_text(self, food: Dict[str, Any]) -> str:
+        """Construct a descriptive text for a food item to improve semantic matching."""
+        parts: List[str] = []
+        name = str(food.get('name', '')).strip()
+        if name:
+            parts.append(name)
+        brand = str(food.get('brandName', '') or '').strip()
+        if brand:
+            parts.append(brand)
+        classification = str(food.get('classification', '') or '').strip()
+        if classification:
+            parts.append(classification)
+        # Include serving names if available (gives hints like "1 cup", "slice", etc.)
+        servings = food.get('servings') or []
+        if isinstance(servings, list) and servings:
+            serv_names = [s.get('name') for s in servings if isinstance(s, dict) and s.get('name')]
+            if serv_names:
+                parts.append("; ".join(serv_names[:3]))
+        return " | ".join(parts)
+
+    def _semantic_rerank(self, query: str, foods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Compute semantic similarity between the query and candidate foods and return reranked list."""
+        if not foods:
+            return []
+        # Build candidate corpus
+        candidate_texts = [self._build_candidate_text(f) for f in foods]
+        # Encode
+        query_vec = self._encode_and_normalize([query])[0]
+        cand_vecs = self._encode_and_normalize(candidate_texts)
+        # Cosine similarities (since vectors are normalized, cosine = dot product)
+        sims = cand_vecs @ query_vec.reshape(-1, 1)
+        sims = sims.flatten()
+        reranked: List[Dict[str, Any]] = []
+        for food, score, desc in zip(foods, sims.tolist(), candidate_texts):
+            f = food.copy()
+            f['relevance_score'] = float(score)
+            f['semantic_context'] = desc
+            reranked.append(f)
+        reranked.sort(key=lambda x: x.get('relevance_score', 0.0), reverse=True)
+        return reranked
+
     def query_food(self, food_name: str, max_results: int = 1) -> List[Dict[str, Any]]:
         """
         Query nutrition information for a food item by name.
@@ -108,6 +201,9 @@ class CalorieKingDirect:
         # Remove standalone measurements
         query = re.sub(r'\b\d+\s*(?:oz|cup|slice|piece|serving|gram|g|lb|pound|tbsp|tsp|patty|bun|buns)\b', '', query)
         
+        # Remove stray standalone numbers
+        query = re.sub(r'\b\d+\b', '', query)
+        
         # Handle multi-ingredient descriptions - extract the main ingredient
         if 'mix of' in query.lower() or 'and' in query.lower():
             # For "mix of broccoli, carrots, and bell peppers" -> focus on first ingredient
@@ -123,6 +219,9 @@ class CalorieKingDirect:
         # Handle generic terms that might need to be more specific
         # Removed special-casing that collapsed 'roasted vegetables' to 'vegetables'
 
+        # Strip leading filler like "of"
+        query = re.sub(r'^\s*of\s+', '', query, flags=re.IGNORECASE)
+
         # Apply simple synonyms to match CalorieKing vocabulary better
         query = self._apply_synonyms(query)
         
@@ -135,6 +234,8 @@ class CalorieKingDirect:
         """Apply a small set of synonyms to better match CalorieKing naming."""
         synonyms_map = {
             'burger bun': 'hamburger bun',
+            'donut': 'doughnut',
+            'boston creme': 'boston kreme',
         }
         lowered = text.lower()
         for src, dst in synonyms_map.items():
@@ -147,7 +248,13 @@ class CalorieKingDirect:
         
         # Remove measurements and common words
         words = re.findall(r'\b\w+\b', query_lower)
-        meaningful_words = [w for w in words if w not in self.measurement_words and len(w) > 2]
+        meaningful_words = [w for w in words if w not in self.measurement_words and w not in self.stop_words and len(w) > 2]
+        
+        # Detect brand phrases present in the query
+        brands = set()
+        for bp in self.brand_phrases:
+            if bp in query_lower:
+                brands.add(bp)
         
         # Identify food types
         food_types = set()
@@ -166,7 +273,8 @@ class CalorieKingDirect:
             'main_keywords': main_keywords,
             'food_types': food_types,
             'cooking_methods': cooking_methods,
-            'all_words': set(meaningful_words)
+            'all_words': set(meaningful_words),
+            'brands': brands
         }
     
     def _search_foods(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
@@ -196,11 +304,12 @@ class CalorieKingDirect:
                     'limit': api_limit
                 }
                 try:
-                    response = requests.get(
+                    response = self.session.get(
                         url,
                         auth=(self.access_token, ''),
                         headers=self.headers,
-                        params=params
+                        params=params,
+                        timeout=(8, 20)
                     )
                     response.raise_for_status()
                     search_response = response.json()
@@ -212,6 +321,8 @@ class CalorieKingDirect:
                             seen_ids.add(rev)
                 except Exception as e:
                     last_error = e
+                    # Gentle backoff between variants on errors (incl. 429)
+                    time.sleep(0.4)
                     continue
             
             if not foods:
@@ -221,48 +332,20 @@ class CalorieKingDirect:
                 return []
             print(f"📋 API returned {len(foods)} aggregated search results")
             
-            # Extract keywords for relevance scoring using original query
-            query_keywords = self._extract_keywords(query)
-            print(f"📝 Keywords: {query_keywords['main_keywords']}")
-            print(f"🍽️  Food types: {query_keywords['food_types']}")
-            print(f"👨‍🍳 Cooking methods: {query_keywords['cooking_methods']}")
-            
-            # Score and collect all results
-            scored: List[Dict[str, Any]] = []
-            for food in foods:
-                food_name = food.get('name', '').lower()
-                score, score_breakdown = self._calculate_relevance_detailed(query_keywords, food_name, food)
-                food_with_score = food.copy()
-                food_with_score['relevance_score'] = score
-                food_with_score['score_breakdown'] = score_breakdown
-                scored.append(food_with_score)
-
-            # Prefer stricter threshold first, then relax if empty
-            def filter_and_log(threshold: float) -> List[Dict[str, Any]]:
-                filtered = [f for f in scored if f.get('relevance_score', 0) > threshold]
-                filtered.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-                for f in filtered[:limit]:
-                    print(f"  📝 Match: {f.get('name', 'Unknown')} (score: {f.get('relevance_score', 0):.3f})")
-                    print(f"      💡 {f.get('score_breakdown', '')}")
-                return filtered
-
-            matches = filter_and_log(0.5)
+            # Semantic reranking using sentence-transformers
+            print("🧠 Using semantic search (SentenceTransformer: paraphrase-MiniLM-L3-v2)...")
+            reranked = self._semantic_rerank(query, foods)
+            # Apply a soft threshold; keep top-N regardless to avoid empty results
+            threshold = 0.35
+            matches = [f for f in reranked if f.get('relevance_score', 0.0) >= threshold]
             if not matches:
-                matches = filter_and_log(0.3)
-            # Final fallback: pick top scored item if still empty
-            if not matches and scored:
-                # Prefer items containing any main keyword
-                main_words = query_keywords.get('main_keywords', set())
-                contains_keyword = [f for f in scored if any(w in f.get('name', '').lower() for w in main_words)]
-                candidates = contains_keyword or scored
-                candidates.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-                top = candidates[:limit]
-                for f in top:
-                    print(f"  📝 Fallback: {f.get('name', 'Unknown')} (score: {f.get('relevance_score', 0):.3f})")
-                matches = top
-            print(f"📊 Found {len(matches)} relevant matches")
-            
-            return matches[:limit]
+                matches = reranked[:limit]
+            else:
+                matches = matches[:limit]
+            for f in matches:
+                print(f"  📝 Match: {f.get('name', 'Unknown')} (semantic: {f.get('relevance_score', 0):.3f})")
+            print(f"📊 Found {len(matches)} semantically relevant matches")
+            return matches
             
         except Exception as e:
             print(f"Error searching for '{query}': {str(e)}")
@@ -314,6 +397,19 @@ class CalorieKingDirect:
             if last_word and last_word not in variants:
                 variants.append(last_word)
 
+        # If a known brand phrase exists, try brand + core term and core term alone
+        lowered = s.lower()
+        for bp in self.brand_phrases:
+            if bp in lowered:
+                tail = lowered.replace(bp, '').strip()
+                tail_clean = " ".join([w for w in tail.split() if w and w not in self.stop_words])
+                if tail_clean:
+                    q = f"{bp} {tail_clean}".strip()
+                    if q and q not in variants:
+                        variants.append(q)
+                    if tail_clean not in variants:
+                        variants.append(tail_clean)
+
         # Targeted variants for common CK naming
         if re.search(r"\broasted vegetables\b", s, flags=re.IGNORECASE):
             v = re.sub(r"\broasted\b", "roast", s, flags=re.IGNORECASE)
@@ -337,10 +433,11 @@ class CalorieKingDirect:
         """Get detailed nutrition information for a specific food."""
         try:
             url = f"{self.base_url}/foods/{revision_id}"
-            response = requests.get(
+            response = self.session.get(
                 url,
                 auth=(self.access_token, ''),
-                headers=self.headers
+                headers=self.headers,
+                timeout=(8, 20)
             )
             response.raise_for_status()
             result = response.json()
@@ -357,6 +454,20 @@ class CalorieKingDirect:
         
         food_name_words = set(re.findall(r'\b\w+\b', food_name.lower()))
         food_name_lower = food_name.lower()
+        
+        # Hard requirements derived from query intent
+        required_terms: List[str] = []
+        if 'salad' in query_keywords['all_words']:
+            required_terms.append('salad')
+        # If query implies a bar/brownie, require one of those terms
+        if ('brownie' in query_keywords['all_words']) or ('bar' in query_keywords['all_words']):
+            if ('brownie' not in food_name_lower) and ('bar' not in food_name_lower):
+                breakdown_parts.append('hard_fail_missing_bar_brownie')
+                return 0.0, (" | ".join(breakdown_parts) if breakdown_parts else 'hard_fail_missing_bar_brownie')
+        for term in required_terms:
+            if term not in food_name_lower:
+                breakdown_parts.append(f'hard_fail_missing_{term}')
+                return 0.0, (" | ".join(breakdown_parts) if breakdown_parts else f'hard_fail_missing_{term}')
         
         # 1. EXACT multi-word phrase match (highest priority)
         original_query_words = list(query_keywords['main_keywords'])
@@ -449,6 +560,17 @@ class CalorieKingDirect:
                 break
         score += cooking_score
         
+        # Brand boost or mild penalty if brand requested but missing
+        brand_boost = 0
+        for brand in query_keywords.get('brands', set()):
+            if brand in food_name_lower:
+                brand_boost = max(brand_boost, 1.2)
+                breakdown_parts.append('brand_match:1.20')
+            else:
+                # mild penalty applied via exact_match_score to avoid negative total too early
+                pass
+        score += brand_boost
+
         # 6. NEGATIVE SCORING - Penalize wrong categories more heavily
         penalty = 0
         
@@ -516,7 +638,7 @@ class CalorieKingDirect:
                 breakdown_parts.append(f"penalty_alcohol:-0.90")
 
         # Hard negatives for packets/mixes/etc unless explicitly requested
-        hard_negative_terms = ['seasoning', 'mix', 'packet', 'dry', 'powder',
+        hard_negative_terms = ['seasoning', 'mix', 'packet', 'dry', 'powder', 'supplement',
                                'base', 'bouillon', 'condensed', 'dressing', 'gravy', 'sauce']
         if any(t in food_name_lower for t in hard_negative_terms) and not any(
             t in query_keywords['all_words'] for t in hard_negative_terms
@@ -834,7 +956,8 @@ class CalorieKingDirect:
             # Save CSV with only requested columns
             os.makedirs(os.path.dirname(output_csv) if os.path.dirname(output_csv) else '.', exist_ok=True)
             df_out = df[['ck_name', 'ck_carbs', 'ck_quantity']]
-            df_out.to_csv(output_csv, index=False)
+            # Ensure consistent quoting for string fields (names and quantities)
+            df_out.to_csv(output_csv, index=False, quoting=csv.QUOTE_NONNUMERIC)
             
             successful_matches = len([k for k, v in nutrition_cache.items() if v['ck_name']])
             print(f"\n✅ Enhanced CSV saved to: {output_csv}")
