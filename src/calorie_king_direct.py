@@ -96,7 +96,9 @@ class CalorieKingDirect:
                 "sentence-transformers is not installed. Please install it with 'pip install sentence-transformers'."
             )
         # Load model once and reuse
+        print(f"🤖 Loading SentenceTransformer model: {self.embed_model_name}")
         self.embed_model = SentenceTransformer(self.embed_model_name)
+        print(f"✅ Model loaded successfully")
 
     def _encode_and_normalize(self, texts: List[str]) -> np.ndarray:
         """Encode texts to embeddings and L2-normalize them for cosine similarity."""
@@ -139,11 +141,70 @@ class CalorieKingDirect:
         sims = cand_vecs @ query_vec.reshape(-1, 1)
         sims = sims.flatten()
         reranked: List[Dict[str, Any]] = []
+        # Lightweight lexical biasing toward exact ingredient matches
+        query_tokens = [w for w in re.findall(r'\b[a-z]+\b', query.lower()) if w not in self.measurement_words and w not in self.stop_words]
+        is_simple_ingredient = len(query_tokens) == 1
+        prepared_dish_terms = {"pizza", "burger", "sandwich", "wrap", "ravioli", "pasta", "noodles", "taco", "burrito"}
+        
         for food, score, desc in zip(foods, sims.tolist(), candidate_texts):
             f = food.copy()
-            f['relevance_score'] = float(score)
+            name_lower = str(f.get('name', '')).lower()
+            adjusted = float(score)
+            
+            # Boost if all query tokens appear in the candidate name
+            if query_tokens and all(t in name_lower for t in query_tokens):
+                adjusted += 0.15 * min(len(query_tokens), 3)
+            
+            # If the query is a simple ingredient, heavily penalize prepared dishes unless exact token present
+            if is_simple_ingredient and query_tokens:
+                token = query_tokens[0]
+                if token not in name_lower and any(term in name_lower for term in prepared_dish_terms):
+                    adjusted -= 0.25  # Strong penalty for pizza when searching for cheese
+            
+            # Hard filter: use CalorieKing classifications to reject wrong categories
+            if is_simple_ingredient and query_tokens:
+                token = query_tokens[0]
+                classification = str(f.get('classification', '')).lower()
+                
+                # Define expected classifications for basic ingredients
+                expected_classifications = {
+                    "cheese": ["dairy", "cheese", "milk products"],
+                    "chicken": ["poultry", "meat", "chicken"],
+                    "beef": ["meat", "beef"],
+                    "fish": ["seafood", "fish"],
+                    "rice": ["grains", "rice", "cereals"],
+                    "vegetables": ["vegetables", "vegetable"],
+                    "bread": ["bakery", "bread", "grains"]
+                }
+                
+                # Wrong classifications for basic ingredients
+                wrong_classifications = {
+                    "cheese": ["sandwiches & burgers", "pizza", "mexican", "fast food"],
+                    "chicken": ["sandwiches & burgers", "pizza", "fast food"] if "chicken" not in name_lower else [],
+                    "beef": ["sandwiches & burgers", "pizza", "fast food"] if "beef" not in name_lower else [],
+                    "fish": ["sandwiches & burgers", "pizza", "fast food"] if "fish" not in name_lower else [],
+                    "rice": ["sandwiches & burgers", "pizza", "mexican"] if "rice" not in name_lower else [],
+                    "vegetables": ["sandwiches & burgers", "pizza", "fast food"] if "vegetables" not in name_lower else []
+                }
+                
+                if token in wrong_classifications:
+                    # Hard reject if classification is completely wrong for this ingredient
+                    for wrong_class in wrong_classifications[token]:
+                        if wrong_class in classification:
+                            adjusted = 0.0  # Hard reject
+                            break
+                    
+                    # Boost if classification matches what we expect
+                    if token in expected_classifications:
+                        for expected_class in expected_classifications[token]:
+                            if expected_class in classification:
+                                adjusted += 0.20
+                                break
+            
+            f['relevance_score'] = adjusted
             f['semantic_context'] = desc
             reranked.append(f)
+        
         reranked.sort(key=lambda x: x.get('relevance_score', 0.0), reverse=True)
         return reranked
 
@@ -225,7 +286,8 @@ class CalorieKingDirect:
         # Apply simple synonyms to match CalorieKing vocabulary better
         query = self._apply_synonyms(query)
         
-        # Clean up extra whitespace
+        # Remove any leftover parenthetical fragments and clean whitespace
+        query = re.sub(r'\([^)]*\)', '', query)
         query = re.sub(r'\s+', ' ', query).strip()
         
         return query
@@ -301,8 +363,10 @@ class CalorieKingDirect:
                 params = {
                     'query': attempt_query,
                     'region': 'us',
-                    'limit': api_limit
+                    'limit': api_limit,
+                    'fields': '$summary,classification,brandName'  # Use partial responses for efficiency
                 }
+                print(f"🌐 Making API request to {url} with params: {params}")
                 try:
                     response = self.session.get(
                         url,
@@ -311,6 +375,7 @@ class CalorieKingDirect:
                         params=params,
                         timeout=(8, 20)
                     )
+                    print(f"📡 API response status: {response.status_code}")
                     response.raise_for_status()
                     search_response = response.json()
                     new_foods = search_response.get('foods', []) if search_response else []
@@ -334,9 +399,11 @@ class CalorieKingDirect:
             
             # Semantic reranking using sentence-transformers
             print("🧠 Using semantic search (SentenceTransformer: paraphrase-MiniLM-L3-v2)...")
+            print(f"🔄 About to rerank {len(foods)} foods for query: '{query}'")
             reranked = self._semantic_rerank(query, foods)
+            print(f"✅ Reranking complete, got {len(reranked)} results")
             # Apply a soft threshold; keep top-N regardless to avoid empty results
-            threshold = 0.35
+            threshold = 0.20
             matches = [f for f in reranked if f.get('relevance_score', 0.0) >= threshold]
             if not matches:
                 matches = reranked[:limit]
@@ -359,6 +426,42 @@ class CalorieKingDirect:
             return [processed_query]
         
         variants.append(s)
+        
+        # For basic ingredients, add specific common variants that exist in CalorieKing
+        basic_ingredients = {"cheese", "chicken", "beef", "fish", "rice", "bread", "vegetables"}
+        if s.lower() in basic_ingredients:
+            # Add common variants that exist in the CalorieKing database
+            if s.lower() == "cheese":
+                variants.extend([
+                    "cheddar cheese", "american cheese", "mozzarella cheese", 
+                    "swiss cheese", "cottage cheese", "cream cheese",
+                    "cheese natural"  # CalorieKing often uses this classification
+                ])
+            elif s.lower() == "chicken":
+                variants.extend([
+                    "chicken breast", "chicken thigh", "chicken drumstick",
+                    "chicken meat", "roasted chicken", "grilled chicken"
+                ])
+            elif s.lower() == "beef":
+                variants.extend([
+                    "ground beef", "beef steak", "lean beef", "beef roast",
+                    "beef brisket", "sirloin", "ribeye"
+                ])
+            elif s.lower() == "fish":
+                variants.extend([
+                    "white fish", "salmon", "tuna", "cod", "tilapia", "fish fillet"
+                ])
+            elif s.lower() == "rice":
+                variants.extend([
+                    "white rice", "brown rice", "jasmine rice", "basmati rice",
+                    "long grain rice", "rice cooked"
+                ])
+            elif s.lower() == "vegetables":
+                variants.extend([
+                    "mixed vegetables", "vegetable medley", "steamed vegetables",
+                    "roasted vegetables", "frozen vegetables"
+                ])
+        
         # Remove trailing "with ..."
         without_with = re.sub(r"\bwith\b.*$", "", s).strip()
         if without_with and without_with not in variants:
@@ -437,7 +540,8 @@ class CalorieKingDirect:
                 url,
                 auth=(self.access_token, ''),
                 headers=self.headers,
-                timeout=(8, 20)
+                timeout=(8, 20),
+                params={'fields': '$detailed'}  # Get all nutrition details efficiently
             )
             response.raise_for_status()
             result = response.json()
