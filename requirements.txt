@@ -7,3 +7,8 @@ python-dotenv>=1.0.0
 numpy<2.0.0
 sentence-transformers>=2.2.2
 torch>=2.1.0
+pathlib
+zipfile36>=0.1.3
+argparse
+chromadb>=0.4.15
+typing-extensions>=4.5.0
